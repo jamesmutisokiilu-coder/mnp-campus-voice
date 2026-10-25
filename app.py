@@ -153,14 +153,15 @@ def json_error(message: str, status: int = 400):
 
 def read_json() -> dict[str, Any]:
     data = request.get_json(silent=True)
-    return data if isinstance(data, dict) else {}
+
+    if isinstance(data, dict):
+        return data
+
+    return {}
 
 
 def read_submission_payload() -> dict[str, Any]:
-    """
-    Accept JSON and HTML FormData, including multipart/form-data.
-    FormData values are available through request.form, not request.get_json().
-    """
+    """Accept JSON and FormData submissions."""
     data = request.get_json(silent=True)
 
     if isinstance(data, dict):
@@ -176,8 +177,10 @@ def first_value(
 ) -> Any:
     for key in keys:
         value = data.get(key)
+
         if value is not None and str(value).strip():
             return value
+
     return default
 
 
@@ -187,10 +190,13 @@ def admin_required(view):
         if not session.get("admin_id"):
             if request.path.startswith("/api/"):
                 return json_error(
-                    "Administrator login required.", 401
+                    "Administrator login required. Please log in again.",
+                    401,
                 )
 
-            return redirect(url_for("admin_login", next=request.path))
+            return redirect(
+                url_for("admin_login", next=request.path)
+            )
 
         return view(*args, **kwargs)
 
@@ -253,7 +259,8 @@ def security_headers(response):
 def too_large(_error):
     if request.path.startswith("/api/"):
         return json_error(
-            "Upload is too large. Keep the request under 12 MB.", 413
+            "Upload is too large. Keep the request under 12 MB.",
+            413,
         )
 
     return "Upload too large. Please use a smaller voice note.", 413
@@ -349,17 +356,7 @@ def admin_logout():
 @app.post("/api/submissions")
 @app.post("/api/feedback")
 def create_submission():
-    """
-    Accept student messages as JSON or FormData.
-
-    Category keys supported:
-        category, message_category, messageCategory
-
-    Message keys supported:
-        body, message, text
-
-    Voice data may be a base64 data URL or an uploaded audio file.
-    """
+    """Accept student messages sent as JSON or FormData."""
     data = read_submission_payload()
 
     category = str(first_value(
@@ -395,7 +392,6 @@ def create_submission():
     audio_b64 = None
     audio_mime = None
 
-    # FIX: read category before attempting to save the submission.
     if not category:
         return json_error("Please choose a message category.")
 
@@ -437,7 +433,9 @@ def create_submission():
                 )
 
         if not audio_bytes:
-            return json_error("Please record or upload a voice note.")
+            return json_error(
+                "Please record or upload a voice note."
+            )
 
         if len(audio_bytes) > 3 * 1024 * 1024:
             return json_error(
@@ -565,52 +563,100 @@ def admin_submission_detail(reference: str):
     })
 
 
+# FIXED REVIEW ENDPOINTS:
+# Supports PATCH on the base URL and POST to both /review and /status.
 @app.patch("/api/admin/submissions/<reference>")
 @app.post("/api/admin/submissions/<reference>/review")
+@app.post("/api/admin/submissions/<reference>/status")
 @admin_required
 def update_submission(reference: str):
+    # Accept JSON and form-encoded requests from different dashboard versions.
     data = read_json()
 
+    if not data and request.form:
+        data = request.form.to_dict(flat=True)
+
     status = str(data.get("status", "")).strip()
+
     review_note = str(
-        data.get("reviewNote", data.get("review_note", ""))
+        data.get(
+            "reviewNote",
+            data.get(
+                "review_note",
+                data.get("note", ""),
+            ),
+        )
     ).strip()[:2000]
 
-    if status and status not in {"Pending", "Approved", "Rejected"}:
+    if status and status not in {
+        "Pending",
+        "Approved",
+        "Rejected",
+    }:
         return json_error("Invalid submission status.")
 
-    with get_db() as db:
-        row = db.execute(
-            "SELECT reference FROM submissions WHERE reference = ?",
-            (reference,),
-        ).fetchone()
-
-        if not row:
-            return json_error("Submission not found.", 404)
-
-        if status:
-            db.execute(
+    try:
+        with get_db() as db:
+            row = db.execute(
                 """
-                UPDATE submissions
-                SET status = ?, review_note = ?, updated_at = ?
+                SELECT reference
+                FROM submissions
                 WHERE reference = ?
                 """,
-                (status, review_note, utc_now(), reference),
-            )
-        else:
-            db.execute(
-                """
-                UPDATE submissions
-                SET review_note = ?, updated_at = ?
-                WHERE reference = ?
-                """,
-                (review_note, utc_now(), reference),
-            )
+                (reference,),
+            ).fetchone()
+
+            if row is None:
+                return json_error("Submission not found.", 404)
+
+            if status:
+                db.execute(
+                    """
+                    UPDATE submissions
+                    SET status = ?, review_note = ?, updated_at = ?
+                    WHERE reference = ?
+                    """,
+                    (
+                        status,
+                        review_note,
+                        utc_now(),
+                        reference,
+                    ),
+                )
+            else:
+                # Save an internal review note without changing the status.
+                db.execute(
+                    """
+                    UPDATE submissions
+                    SET review_note = ?, updated_at = ?
+                    WHERE reference = ?
+                    """,
+                    (
+                        review_note,
+                        utc_now(),
+                        reference,
+                    ),
+                )
+
+    except sqlite3.Error:
+        current_app.logger.exception(
+            "Could not update submission review"
+        )
+        return json_error(
+            "Could not save the review. Please try again.",
+            500,
+        )
 
     return jsonify({
         "ok": True,
-        "message": "Submission review saved.",
-    })
+        "message": (
+            f"Submission {status.lower()} successfully."
+            if status
+            else "Review note saved successfully."
+        ),
+        "reference": reference,
+        "status": status or None,
+    }), 200
 
 
 @app.post("/api/admin/responses")
@@ -686,7 +732,9 @@ def update_response(response_id: int):
     published = data.get("published")
 
     if not isinstance(published, bool):
-        return json_error("Provide published as true or false.")
+        return json_error(
+            "Provide published as true or false."
+        )
 
     with get_db() as db:
         cursor = db.execute(
