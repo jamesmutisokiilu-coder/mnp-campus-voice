@@ -1,5 +1,4 @@
 
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -129,7 +128,7 @@
     .primary {
       background: var(--blue);
       color: white;
-      box-shadow: 0 8px 20px #2b8ef128;
+      box-shadow: 0 8px 20px #0a3cd4d6;
     }
 
     .primary:hover { background: var(--blue-dark); }
@@ -650,17 +649,27 @@
 <body>
   <div class="top">
     <div class="topin">
-      <span>Meru National Polytechnic</span>
+      <span>The Meru National Polytechnic</span>
       <span>Student feedback · Suggestions · Campus concerns</span>
     </div>
   </div>
 
   <div class="navwrap">
     <nav aria-label="Main navigation">
-      <a class="brand" href="#home">
-        <span class="mark">CV</span>
-        <span>Campus Voice<span class="sub">The Meru National Polytechnic</span></span>
-      </a>
+   
+<a class="brand" href="#home">
+  <img
+    src="../static/images/1.png"
+    alt="Campus Voice Logo"
+    class="brand-logo"
+  >
+
+  <span class="brand-text">
+    Campus Voice
+    <span class="sub">The Meru National Polytechnic</span>
+  </span>
+</a>
+
       <div class="links">
         <a href="#how">How it works</a>
         <a href="#privacy">Privacy</a>
@@ -669,6 +678,7 @@
       </div>
       <div class="navactions">
         <a class="btn admin-login" href="/admin_login">Admin Login ↗</a>
+        <br><br>
         <a class="btn primary" href="#submit">Share anonymously ↗</a>
       </div>
     </nav>
