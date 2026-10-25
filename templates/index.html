@@ -860,442 +860,439 @@
     <div class="fine">Campus Voice · Anonymous feedback handled through the application backend.</div>
   </footer>
 
-  <script>
-  (() => {
-    "use strict";
+ 
+<script>
+(() => {
+  "use strict";
 
-    const $ = id => document.getElementById(id);
-    const form = $("feedbackForm");
-    const category = $("category");
-    const message = $("message");
-    const textMode = $("textMode");
-    const voiceMode = $("voiceMode");
-    const textPanel = $("textPanel");
-    const voicePanel = $("voicePanel");
-    const charCount = $("charCount");
-    const recordButton = $("recordButton");
-    const stopButton = $("stopButton");
-    const clearAudioButton = $("clearAudioButton");
-    const audioStatus = $("audioStatus");
-    const audioPreview = $("audioPreview");
-    const audioUpload = $("audioUpload");
-    const feedback = $("feedback");
-    const submitButton = form.querySelector(".submitbtn");
-    const responseGrid = $("responseGrid");
+  const $ = id => document.getElementById(id);
 
-    let mode = "text";
-    let mediaRecorder = null;
-    let stream = null;
-    let chunks = [];
-    let audioBlob = null;
-    let audioUrl = null;
-    let recordingTimer = null;
-    let recordingSeconds = 0;
+  const form = $("feedbackForm");
+  const category = $("category");
+  const message = $("message");
+  const textMode = $("textMode");
+  const voiceMode = $("voiceMode");
+  const textPanel = $("textPanel");
+  const voicePanel = $("voicePanel");
+  const charCount = $("charCount");
+  const recordButton = $("recordButton");
+  const stopButton = $("stopButton");
+  const clearAudioButton = $("clearAudioButton");
+  const audioStatus = $("audioStatus");
+  const audioPreview = $("audioPreview");
+  const audioUpload = $("audioUpload");
+  const feedback = $("feedback");
+  const submitButton = form.querySelector(".submitbtn");
+  const responseGrid = $("responseGrid");
 
-    function setMode(nextMode) {
-      mode = nextMode;
-      const isText = mode === "text";
+  let mode = "text";
+  let mediaRecorder = null;
+  let stream = null;
+  let chunks = [];
+  let audioBlob = null;
+  let audioUrl = null;
+  let recordingTimer = null;
+  let recordingSeconds = 0;
 
-      textMode.classList.toggle("active", isText);
-      voiceMode.classList.toggle("active", !isText);
-      textMode.setAttribute("aria-pressed", String(isText));
-      voiceMode.setAttribute("aria-pressed", String(!isText));
+  function showMessage(text, isError = false) {
+    feedback.textContent = text;
+    feedback.classList.add("show");
+    feedback.classList.toggle("error", isError);
+  }
 
-      textPanel.hidden = !isText;
-      voicePanel.hidden = isText;
-      message.required = isText;
+  function setMode(nextMode) {
+    mode = nextMode;
+    const isText = mode === "text";
 
-      feedback.classList.remove("show", "error");
+    textMode.classList.toggle("active", isText);
+    voiceMode.classList.toggle("active", !isText);
+
+    textMode.setAttribute("aria-pressed", String(isText));
+    voiceMode.setAttribute("aria-pressed", String(!isText));
+
+    textPanel.hidden = !isText;
+    voicePanel.hidden = isText;
+    message.required = isText;
+
+    feedback.classList.remove("show", "error");
+  }
+
+  textMode.addEventListener("click", () => setMode("text"));
+  voiceMode.addEventListener("click", () => setMode("voice"));
+
+  message.addEventListener("input", () => {
+    charCount.textContent = message.value.length;
+  });
+
+  function stopRecordingResources() {
+    if (recordingTimer) {
+      clearInterval(recordingTimer);
+      recordingTimer = null;
     }
 
-    textMode.addEventListener("click", () => setMode("text"));
-    voiceMode.addEventListener("click", () => setMode("voice"));
-
-    message.addEventListener("input", () => {
-      charCount.textContent = message.value.length;
-    });
-
-    function stopRecordingResources() {
-      if (recordingTimer) {
-        clearInterval(recordingTimer);
-        recordingTimer = null;
-      }
-
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-        stream = null;
-      }
-
-      recordButton.classList.remove("recording");
-      stopButton.disabled = true;
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      stream = null;
     }
 
-    function clearAudio() {
-      if (mediaRecorder && mediaRecorder.state === "recording") {
-        mediaRecorder.stop();
-      }
+    recordButton.classList.remove("recording");
+    stopButton.disabled = true;
+  }
 
-      stopRecordingResources();
+  function clearAudio() {
+    if (mediaRecorder && mediaRecorder.state === "recording") {
+      mediaRecorder.stop();
+    }
 
-      if (audioUrl) URL.revokeObjectURL(audioUrl);
+    stopRecordingResources();
 
-      audioUrl = null;
-      audioBlob = null;
+    if (audioUrl) URL.revokeObjectURL(audioUrl);
+
+    audioUrl = null;
+    audioBlob = null;
+    chunks = [];
+
+    audioPreview.removeAttribute("src");
+    audioPreview.hidden = true;
+    clearAudioButton.disabled = true;
+    audioUpload.value = "";
+    recordButton.textContent = "● Start recording";
+    audioStatus.textContent =
+      "No audio selected. Record a note or choose an audio file.";
+  }
+
+  function showAudio(blob, label) {
+    if (!blob || !blob.size) {
+      audioStatus.textContent = "The audio is empty. Please record again.";
+      return;
+    }
+
+    if (blob.size > 10 * 1024 * 1024) {
+      audioStatus.textContent = "Audio must be 10 MB or smaller.";
+      return;
+    }
+
+    if (audioUrl) URL.revokeObjectURL(audioUrl);
+
+    audioBlob = blob;
+    audioUrl = URL.createObjectURL(blob);
+
+    audioPreview.src = audioUrl;
+    audioPreview.hidden = false;
+    clearAudioButton.disabled = false;
+    audioUpload.value = "";
+
+    audioStatus.textContent =
+      `${label} ready (${(blob.size / 1048576).toFixed(2)} MB).`;
+  }
+
+  recordButton.addEventListener("click", async () => {
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      audioStatus.textContent =
+        "Recording requires HTTPS or localhost and a supported browser.";
+      return;
+    }
+
+    try {
+      clearAudio();
+
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       chunks = [];
 
-      audioPreview.removeAttribute("src");
-      audioPreview.hidden = true;
-      clearAudioButton.disabled = true;
-      audioUpload.value = "";
-      recordButton.textContent = "● Start recording";
-      audioStatus.textContent = "No audio selected. Record a note or choose an audio file.";
-    }
-
-    function showAudio(blob, label) {
-      if (!blob || !blob.size) {
-        audioStatus.textContent = "The recording was empty. Please record again or choose another file.";
-        return;
+      const options = {};
+      if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
+        options.mimeType = "audio/webm;codecs=opus";
       }
 
-      if (blob.size > 10 * 1024 * 1024) {
-        audioBlob = null;
-        audioUpload.value = "";
-        audioPreview.removeAttribute("src");
-        audioPreview.hidden = true;
-        clearAudioButton.disabled = true;
-        audioStatus.textContent = "That audio file is larger than 10 MB. Choose a smaller recording.";
-        return;
-      }
+      mediaRecorder = new MediaRecorder(stream, options);
 
-      if (audioUrl) URL.revokeObjectURL(audioUrl);
+      mediaRecorder.addEventListener("dataavailable", event => {
+        if (event.data?.size) chunks.push(event.data);
+      });
 
-      audioBlob = blob;
-      audioUrl = URL.createObjectURL(blob);
-      audioPreview.src = audioUrl;
-      audioPreview.hidden = false;
-      clearAudioButton.disabled = false;
-      audioUpload.value = "";
+      mediaRecorder.addEventListener("stop", () => {
+        const mime = mediaRecorder?.mimeType ||
+          chunks[0]?.type || "audio/webm";
 
-      audioStatus.textContent =
-        `${label} ready (${(blob.size / 1024 / 1024).toFixed(2)} MB). Preview it before continuing.`;
-    }
+        const blob = new Blob(chunks, { type: mime });
 
-    recordButton.addEventListener("click", async () => {
-      if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-        audioStatus.textContent = "Recording is not supported here. Try a recent browser on HTTPS, or upload an audio file.";
-        return;
-      }
-
-      try {
-        clearAudio();
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        chunks = [];
-
-        const options = {};
-        if (MediaRecorder.isTypeSupported?.("audio/webm;codecs=opus")) {
-          options.mimeType = "audio/webm;codecs=opus";
-        }
-
-        mediaRecorder = new MediaRecorder(stream, options);
-
-        mediaRecorder.addEventListener("dataavailable", event => {
-          if (event.data && event.data.size) chunks.push(event.data);
-        });
-
-        mediaRecorder.addEventListener("stop", () => {
-          const mimeType = mediaRecorder?.mimeType || chunks[0]?.type || "audio/webm";
-          const blob = new Blob(chunks, { type: mimeType });
-
-          stopRecordingResources();
-          showAudio(blob, "Recording");
-          recordButton.textContent = "● Record again";
-        });
-
-        mediaRecorder.start();
-        recordingSeconds = 0;
-        recordButton.classList.add("recording");
-        recordButton.textContent = "● Recording… 0:00";
-        stopButton.disabled = false;
-        audioStatus.textContent = "Recording. Speak clearly and avoid saying your name if you want to reduce identifying details.";
-
-        recordingTimer = setInterval(() => {
-          recordingSeconds++;
-
-          recordButton.textContent =
-            `● Recording… ${Math.floor(recordingSeconds / 60)}:${String(recordingSeconds % 60).padStart(2, "0")}`;
-
-          if (recordingSeconds >= 120 && mediaRecorder?.state === "recording") {
-            mediaRecorder.stop();
-          }
-        }, 1000);
-      } catch (error) {
         stopRecordingResources();
-        audioStatus.textContent = "Microphone access was unavailable. Check browser permissions or upload an audio file.";
-      }
-    });
+        showAudio(blob, "Recording");
+        recordButton.textContent = "● Record again";
+      });
 
-    stopButton.addEventListener("click", () => {
-      if (mediaRecorder?.state === "recording") mediaRecorder.stop();
-    });
+      mediaRecorder.start();
+      recordingSeconds = 0;
 
-    clearAudioButton.addEventListener("click", clearAudio);
+      recordButton.classList.add("recording");
+      stopButton.disabled = false;
+      recordButton.textContent = "● Recording… 0:00";
 
-    audioUpload.addEventListener("change", () => {
-      const file = audioUpload.files?.[0];
-      if (!file) return;
+      audioStatus.textContent = "Recording in progress.";
 
-      if (!file.type.startsWith("audio/")) {
-        audioStatus.textContent = "Please choose a valid audio file.";
-        audioUpload.value = "";
-        return;
-      }
+      recordingTimer = setInterval(() => {
+        recordingSeconds++;
 
-      if (file.size > 10 * 1024 * 1024) {
-        audioStatus.textContent = "File is larger than 10 MB. Choose a smaller file.";
-        audioUpload.value = "";
-        return;
-      }
+        recordButton.textContent =
+          `● Recording… ${Math.floor(recordingSeconds / 60)}:` +
+          String(recordingSeconds % 60).padStart(2, "0");
 
-      if (mediaRecorder?.state === "recording") mediaRecorder.stop();
-      if (audioUrl) URL.revokeObjectURL(audioUrl);
+        if (recordingSeconds >= 120 &&
+            mediaRecorder?.state === "recording") {
+          mediaRecorder.stop();
+        }
+      }, 1000);
 
-      audioBlob = file;
-      audioUrl = URL.createObjectURL(file);
-      audioPreview.src = audioUrl;
-      audioPreview.hidden = false;
-      clearAudioButton.disabled = false;
-
+    } catch {
+      stopRecordingResources();
       audioStatus.textContent =
-        `Uploaded audio ready (${(file.size / 1024 / 1024).toFixed(2)} MB). Preview it before continuing.`;
-    });
+        "Microphone unavailable. Check permissions or upload an audio file.";
+    }
+  });
 
-    function showMessage(text, isError = false) {
-      feedback.textContent = text;
-      feedback.classList.add("show");
-      feedback.classList.toggle("error", isError);
+  stopButton.addEventListener("click", () => {
+    if (mediaRecorder?.state === "recording") {
+      mediaRecorder.stop();
+    }
+  });
+
+  clearAudioButton.addEventListener("click", clearAudio);
+
+  audioUpload.addEventListener("change", () => {
+    const file = audioUpload.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("audio/")) {
+      audioStatus.textContent = "Choose a valid audio file.";
+      audioUpload.value = "";
+      return;
     }
 
-    function formatDate(value) {
-      if (!value) return "Recently published";
-
-      const date = new Date(value);
-
-      return Number.isNaN(date.getTime())
-        ? "Recently published"
-        : date.toLocaleString(undefined, {
-            dateStyle: "medium",
-            timeStyle: "short"
-          });
+    if (file.size > 10 * 1024 * 1024) {
+      audioStatus.textContent = "Audio must be 10 MB or smaller.";
+      audioUpload.value = "";
+      return;
     }
 
-    function showEmptyReplies(title, description) {
+    if (mediaRecorder?.state === "recording") {
+      mediaRecorder.stop();
+    }
+
+    showAudio(file, "Uploaded audio");
+  });
+
+  async function renderReplies() {
+    try {
+      const response = await fetch("/api/responses", {
+        headers: { Accept: "application/json" },
+        cache: "no-store"
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.ok ||
+          !Array.isArray(data.responses)) {
+        throw new Error("Could not load responses.");
+      }
+
+      const published = data.responses.filter(item =>
+        item && (
+          item.published === true ||
+          item.is_published === true
+        )
+      );
+
+      responseGrid.replaceChildren();
+
+      if (!published.length) {
+        const empty = document.createElement("div");
+        empty.className = "response-empty";
+
+        const title = document.createElement("strong");
+        title.textContent = "No official replies published yet";
+
+        empty.append(
+          title,
+          document.createTextNode(
+            "Published administration responses will appear here."
+          )
+        );
+
+        responseGrid.appendChild(empty);
+        return;
+      }
+
+      published.forEach(item => {
+        const card = document.createElement("article");
+        card.className = "response-card";
+
+        const title = document.createElement("h3");
+        title.textContent =
+          item.title || "Official administration response";
+
+        const body = document.createElement("p");
+        body.textContent = item.body || item.response || "";
+
+        const meta = document.createElement("div");
+        meta.className = "response-meta";
+
+        const cat = document.createElement("span");
+        cat.textContent = item.category || "General announcement";
+
+        const date = document.createElement("span");
+        const rawDate = item.date || item.created_at ||
+          item.published_at;
+
+        const parsed = rawDate ? new Date(rawDate) : null;
+        date.textContent =
+          parsed && !Number.isNaN(parsed.getTime())
+            ? parsed.toLocaleString()
+            : "Recently published";
+
+        meta.append(cat, date);
+        card.append(title, body, meta);
+        responseGrid.appendChild(card);
+      });
+
+    } catch {
       responseGrid.replaceChildren();
 
       const empty = document.createElement("div");
       empty.className = "response-empty";
 
-      const heading = document.createElement("strong");
-      heading.textContent = title;
+      const title = document.createElement("strong");
+      title.textContent = "Replies temporarily unavailable";
 
-      const body = document.createElement("span");
-      body.textContent = description;
+      empty.append(
+        title,
+        document.createTextNode(
+          "Check that the Flask /api/responses route is working."
+        )
+      );
 
-      empty.append(heading, body);
       responseGrid.appendChild(empty);
     }
+  }
 
-    async function renderReplies() {
-      try {
-        const response = await fetch("/api/responses", {
-          method: "GET",
-          headers: { "Accept": "application/json" },
-          cache: "no-store"
-        });
+  $("refreshReplies").addEventListener("click", renderReplies);
+  renderReplies();
 
-        const data = await response.json();
+  setInterval(() => {
+    if (!document.hidden) renderReplies();
+  }, 30000);
 
-        if (!response.ok || !data.ok || !Array.isArray(data.responses)) {
-          throw new Error("Could not load replies.");
-        }
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
 
-        const published = data.responses.filter(item =>
-          item && (item.published === true || item.is_published === true)
-        );
+    feedback.classList.remove("show", "error");
 
-        if (!published.length) {
-          showEmptyReplies(
-            "No official replies published yet",
-            "When the administration publishes a response, it will appear here."
-          );
-          return;
-        }
+    const selectedCategory = category.value.trim();
 
-        responseGrid.replaceChildren();
-
-        published.forEach(item => {
-          const article = document.createElement("article");
-          article.className = "response-card";
-
-          const title = document.createElement("h3");
-          title.textContent = item.title || "Official administration response";
-
-          const body = document.createElement("p");
-          body.textContent = item.body || item.response || "";
-
-          const meta = document.createElement("div");
-          meta.className = "response-meta";
-
-          const cat = document.createElement("span");
-          cat.textContent = item.category || "General announcement";
-
-          const separator = document.createElement("span");
-          separator.textContent = "•";
-
-          const date = document.createElement("span");
-          date.textContent = formatDate(item.date || item.created_at || item.published_at);
-
-          meta.append(cat, separator, date);
-          article.append(title, body, meta);
-          responseGrid.appendChild(article);
-        });
-      } catch (error) {
-        showEmptyReplies(
-          "Replies are temporarily unavailable",
-          "Please refresh the page in a moment. Check that the Flask /api/responses route is working."
-        );
-      }
+    if (!selectedCategory) {
+      showMessage("Please select a category.", true);
+      category.focus();
+      return;
     }
 
-    $("refreshReplies").addEventListener("click", renderReplies);
-    renderReplies();
+    if (mode === "text" && !message.value.trim()) {
+      showMessage("Please enter your message.", true);
+      message.focus();
+      return;
+    }
 
-    setInterval(() => {
-      if (!document.hidden) renderReplies();
-    }, 30000);
+    if (mode === "voice" && !audioBlob) {
+      showMessage("Please record or upload a voice note.", true);
+      return;
+    }
 
-    form.addEventListener("submit", async event => {
-      event.preventDefault();
-      feedback.classList.remove("show", "error");
+    if (!$("confirm").checked) {
+      showMessage("Please confirm the statement before submitting.", true);
+      $("confirm").focus();
+      return;
+    }
 
-      /*
-       * FIX: Read the actual selected dropdown value.
-       * Never validate the category using its displayed label or a different ID.
-       */
-      const selectedCategory = String(category.value || "").trim();
+    submitButton.disabled = true;
+    submitButton.textContent = "Submitting…";
 
-      if (!selectedCategory) {
-        showMessage("Please select a message category from the dropdown before submitting.", true);
-        category.focus();
-        return;
+    try {
+      const payload = new FormData();
+
+      payload.append("category", selectedCategory);
+      payload.append("category_id", selectedCategory);
+      payload.append("type", mode === "voice" ? "Voice note" : "Text");
+
+      const textBody = mode === "text" ? message.value.trim() : "";
+
+      payload.append("body", textBody);
+      payload.append("message", textBody);
+      payload.append("details", $("details").value.trim());
+
+      if (mode === "voice") {
+        const filename = audioBlob instanceof File
+          ? audioBlob.name
+          : "campus-voice-note.webm";
+
+        payload.append("audio", audioBlob, filename);
       }
 
-      if (mode === "text" && !message.value.trim()) {
-        showMessage("Please enter your message before submitting.", true);
-        message.focus();
-        return;
-      }
+      const response = await fetch("/api/submissions", {
+        method: "POST",
+        headers: { Accept: "application/json" },
+        body: payload,
+        credentials: "same-origin"
+      });
 
-      if (mode === "voice" && !audioBlob) {
-        showMessage("Record a voice note or choose an audio file before continuing.", true);
-        audioStatus.textContent = "Record a voice note or choose an audio file before continuing.";
-        return;
-      }
-
-      if (!$("confirm").checked) {
-        showMessage("Please confirm the statement below before submitting.", true);
-        $("confirm").focus();
-        return;
-      }
-
-      submitButton.disabled = true;
-      submitButton.textContent = "Submitting…";
+      let result;
 
       try {
-        const payload = new FormData();
-
-        // Include the chosen category under both common field names.
-        payload.append("category", selectedCategory);
-        payload.append("category_id", selectedCategory);
-
-        payload.append("type", mode === "voice" ? "Voice note" : "Text");
-
-        const textBody = mode === "text" ? message.value.trim() : "";
-        payload.append("body", textBody);
-        payload.append("message", textBody);
-        payload.append("details", $("details").value.trim());
-
-        if (mode === "voice") {
-          if (audioBlob.size > 10 * 1024 * 1024) {
-            throw new Error("The audio file must be 10 MB or smaller.");
-          }
-
-          const filename =
-            audioBlob instanceof File && audioBlob.name
-              ? audioBlob.name
-              : "campus-voice-note.webm";
-
-          payload.append("audio", audioBlob, filename);
-        }
-
-        /*
-         * This request uses multipart/form-data.
-         * Do not set Content-Type manually; the browser adds the boundary.
-         */
-        const response = await fetch("/api/submissions", {
-          method: "POST",
-          body: payload,
-          headers: { "Accept": "application/json" }
-        });
-
-        let result;
-
-        try {
-          result = await response.json();
-        } catch {
-          throw new Error(
-            "The server returned an unexpected response. Check the Flask /api/submissions route."
-          );
-        }
-
-        if (
-          !response.ok ||
-          result.ok === false ||
-          result.success === false
-        ) {
-          throw new Error(
-            result.error ||
-            result.message ||
-            "The submission could not be saved. Please check the server."
-          );
-        }
-
-        showMessage(
-          "Thank you. Your anonymous submission has been sent to the administration." +
-          (result.reference ? ` Reference: ${result.reference}.` : "")
+        result = await response.json();
+      } catch {
+        throw new Error(
+          "The server did not return JSON. Check the Flask submission route."
         );
-
-        form.reset();
-        charCount.textContent = "0";
-        clearAudio();
-        setMode("text");
-
-        feedback.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      } catch (error) {
-        showMessage(
-          error.message || "Could not submit your feedback. Check your connection and try again.",
-          true
-        );
-      } finally {
-        submitButton.disabled = false;
-        submitButton.textContent = "Submit anonymously →";
       }
-    });
 
-    window.addEventListener("beforeunload", () => {
-      stopRecordingResources();
-      if (audioUrl) URL.revokeObjectURL(audioUrl);
-    });
-  })();
-  </script>
+      if (!response.ok || result.ok === false ||
+          result.success === false) {
+        throw new Error(
+          result.error || result.message ||
+          `Submission failed (HTTP ${response.status}).`
+        );
+      }
+
+      showMessage(
+        "Your submission was accepted by the server." +
+        (result.reference ? ` Reference: ${result.reference}.` : "")
+      );
+
+      form.reset();
+      charCount.textContent = "0";
+      clearAudio();
+      setMode("text");
+
+      feedback.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest"
+      });
+
+    } catch (error) {
+      showMessage(
+        error.message || "Submission failed. Please try again.",
+        true
+      );
+    } finally {
+      submitButton.disabled = false;
+      submitButton.textContent = "Submit anonymously →";
+    }
+  });
+
+  window.addEventListener("beforeunload", () => {
+    stopRecordingResources();
+    if (audioUrl) URL.revokeObjectURL(audioUrl);
+  });
+})();
+</script>
+
+
 </body>
 </html>
