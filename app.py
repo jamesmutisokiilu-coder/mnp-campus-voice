@@ -11,11 +11,9 @@ from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from flask import (
     Flask,
-    abort,
     jsonify,
     redirect,
     render_template,
@@ -35,7 +33,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 app = Flask(__name__)
 
-app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024  # 12 MB
+app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = (
@@ -57,18 +55,16 @@ if DATABASE_PATH != ":memory:":
     )
 
 ALLOWED_AUDIO_EXTENSIONS = {
-    ".mp3",
-    ".wav",
-    ".ogg",
-    ".oga",
-    ".m4a",
-    ".aac",
-    ".webm",
-    ".mp4",
-    ".3gp",
+    ".mp3", ".wav", ".ogg", ".oga", ".m4a",
+    ".aac", ".webm", ".mp4", ".3gp",
 }
 
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
+
+# Administrator credentials.
+# Prefer setting ADMIN_USERNAME and ADMIN_PASSWORD in Render.
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "meru123").strip()
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "merupoly123@")
 
 
 # ============================================================
@@ -76,56 +72,41 @@ MAX_AUDIO_BYTES = 10 * 1024 * 1024
 # ============================================================
 
 def utc_now() -> str:
-    """Return a timezone-aware UTC timestamp."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def get_db() -> sqlite3.Connection:
-    """Open a SQLite connection with dictionary-style rows."""
-    connection = sqlite3.connect(
-        DATABASE_PATH,
-        timeout=30,
-    )
+    connection = sqlite3.connect(DATABASE_PATH, timeout=30)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA busy_timeout = 30000")
     return connection
 
 
-def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
-    return dict(row) if row is not None else None
-
-
 def json_error(message: str, status: int = 400):
-    return jsonify({"success": False, "error": message, "message": message}), status
+    return jsonify({
+        "success": False,
+        "error": message,
+        "message": message,
+    }), status
 
 
 def request_data() -> dict[str, Any]:
-    """Read JSON or form-encoded request data."""
     if request.is_json:
         data = request.get_json(silent=True)
         return data if isinstance(data, dict) else {}
-
     return request.form.to_dict()
 
 
 def get_audio_upload():
-    """Find an uploaded voice-note file using supported field names."""
     for field in ("audio", "voice", "audio_file", "voice_note"):
         uploaded = request.files.get(field)
         if uploaded and uploaded.filename:
             return uploaded
-
     return None
 
 
 def decode_audio_data(value: str) -> tuple[str, str] | None:
-    """
-    Decode a base64 data URL and return (base64_payload, MIME type).
-
-    Accepted example:
-    data:audio/webm;base64,AAAA...
-    """
     if not value or not isinstance(value, str):
         return None
 
@@ -134,6 +115,7 @@ def decode_audio_data(value: str) -> tuple[str, str] | None:
         value.strip(),
         flags=re.DOTALL,
     )
+
     if not match:
         return None
 
@@ -165,15 +147,11 @@ def normalise_status(value: str | None) -> str:
 
 
 def submission_public_dict(row: sqlite3.Row) -> dict[str, Any]:
-    """Return submission fields without exposing audio contents."""
     item = dict(row)
-
-    # Compatibility aliases for front-end code.
     item["type"] = item.get("message_type", "Text")
     item["review_note"] = item.get("review_note") or ""
     item["has_audio"] = bool(item.get("audio_base64"))
     item.pop("audio_base64", None)
-
     return item
 
 
@@ -186,17 +164,16 @@ def response_public_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def admin_required(function):
-    """Protect a page or API route with the admin session."""
     @wraps(function)
     def wrapper(*args, **kwargs):
         if not session.get("admin_id"):
             if request.path.startswith("/api/"):
-                return json_error("Please log in as an administrator.", 401)
-
+                return json_error(
+                    "Please log in as an administrator.",
+                    401,
+                )
             return redirect(url_for("admin_login"))
-
         return function(*args, **kwargs)
-
     return wrapper
 
 
@@ -205,12 +182,10 @@ def admin_required(function):
 # ============================================================
 
 def init_db() -> None:
-    """Create required tables and add missing columns to older databases."""
     connection = get_db()
 
     try:
-        connection.executescript(
-            """
+        connection.executescript("""
             CREATE TABLE IF NOT EXISTS admins (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL UNIQUE,
@@ -255,10 +230,8 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_responses_published
                 ON responses(published);
-            """
-        )
+        """)
 
-        # Migrate older versions of the database safely.
         migrations = {
             "admins": {
                 "password_hash": "TEXT NOT NULL DEFAULT ''",
@@ -310,27 +283,12 @@ def init_db() -> None:
 
 
 def ensure_default_admin() -> None:
-    """
-    Create or update the configured admin account.
-
-    No insecure default account is created. Configure ADMIN_USERNAME and
-    ADMIN_PASSWORD in the deployment environment before using admin login.
-    """
-    username = os.environ.get("ADMIN_USERNAME", "").strip()
-    password = os.environ.get("ADMIN_PASSWORD", "")
+    """Create the configured admin or update its password."""
+    username = ADMIN_USERNAME
+    password = ADMIN_PASSWORD
 
     if not username or not password:
-        app.logger.warning(
-            "ADMIN_USERNAME or ADMIN_PASSWORD is not configured. "
-            "Admin login is unavailable until both are set."
-        )
-        return
-
-    if len(password) < 12:
-        app.logger.error(
-            "ADMIN_PASSWORD must contain at least 12 characters. "
-            "The configured admin account was not created or updated."
-        )
+        app.logger.error("Administrator credentials are missing.")
         return
 
     connection = get_db()
@@ -367,7 +325,6 @@ def ensure_default_admin() -> None:
         connection.close()
 
 
-# Initialise the database on application startup.
 init_db()
 ensure_default_admin()
 
@@ -384,19 +341,28 @@ def home():
 
 @app.route("/health")
 def health():
-    """Render health-check endpoint."""
+    connection = None
+
     try:
         connection = get_db()
         connection.execute("SELECT 1").fetchone()
-        connection.close()
-        return jsonify({"status": "ok", "service": "Campus Voice"}), 200
+        return jsonify({
+            "status": "ok",
+            "service": "Campus Voice",
+        }), 200
     except sqlite3.Error:
         app.logger.exception("Database health check failed")
-        return jsonify({"status": "error", "service": "Campus Voice"}), 503
+        return jsonify({
+            "status": "error",
+            "service": "Campus Voice",
+        }), 503
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 # ============================================================
-# PUBLIC SUBMISSION API
+# PUBLIC SUBMISSIONS
 # ============================================================
 
 @app.route("/api/submissions", methods=["POST"])
@@ -412,6 +378,7 @@ def create_submission():
     ).strip().lower()
 
     category = str(data.get("category") or "General").strip()[:100]
+
     body = str(
         data.get("body")
         or data.get("message")
@@ -432,14 +399,11 @@ def create_submission():
     audio_filename = None
 
     if uploaded_audio is not None:
-        extension = Path(
-            secure_filename(uploaded_audio.filename or "")
-        ).suffix.lower()
+        filename = secure_filename(uploaded_audio.filename or "")
+        extension = Path(filename).suffix.lower()
 
         if extension and extension not in ALLOWED_AUDIO_EXTENSIONS:
-            return json_error(
-                "Unsupported audio file type. Please upload a supported audio format."
-            )
+            return json_error("Unsupported audio file type.")
 
         audio_bytes = uploaded_audio.read(MAX_AUDIO_BYTES + 1)
 
@@ -447,12 +411,14 @@ def create_submission():
             return json_error("The voice note must not exceed 10 MB.")
 
         if audio_bytes:
-            audio_base64 = base64.b64encode(audio_bytes).decode("ascii")
+            audio_base64 = base64.b64encode(
+                audio_bytes
+            ).decode("ascii")
+
             audio_mime = (
-                uploaded_audio.mimetype
-                or "application/octet-stream"
+                uploaded_audio.mimetype or "application/octet-stream"
             )
-            audio_filename = secure_filename(uploaded_audio.filename or "voice-note")
+            audio_filename = filename or "voice-note"
 
     else:
         audio_value = (
@@ -468,8 +434,13 @@ def create_submission():
         if decoded:
             audio_base64, audio_mime = decoded
             audio_filename = "voice-note"
-        elif isinstance(audio_value, str) and audio_value.startswith("data:"):
-            return json_error("The supplied voice note is invalid or too large.")
+        elif (
+            isinstance(audio_value, str)
+            and audio_value.startswith("data:")
+        ):
+            return json_error(
+                "The supplied voice note is invalid or too large."
+            )
 
     is_voice = (
         "voice" in raw_type
@@ -482,11 +453,13 @@ def create_submission():
     if message_type == "Text" and not body and not details:
         return json_error("Please enter a message before submitting.")
 
-    if message_type == "Voice note" and not audio_base64 and not body and not details:
+    if (
+        message_type == "Voice note"
+        and not audio_base64
+        and not body
+        and not details
+    ):
         return json_error("Please record or upload a voice note.")
-
-    if not category:
-        category = "General"
 
     timestamp = utc_now()
     connection = get_db()
@@ -495,23 +468,15 @@ def create_submission():
         cursor = connection.execute(
             """
             INSERT INTO submissions (
-                message_type,
-                category,
-                body,
-                details,
-                audio_base64,
-                audio_mime,
-                audio_filename,
-                status,
-                review_note,
-                created_at,
-                updated_at
+                message_type, category, body, details,
+                audio_base64, audio_mime, audio_filename,
+                status, review_note, created_at, updated_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, 'New', '', ?, ?)
             """,
             (
                 message_type,
-                category,
+                category or "General",
                 body,
                 details,
                 audio_base64,
@@ -528,25 +493,26 @@ def create_submission():
     except sqlite3.Error:
         connection.rollback()
         app.logger.exception("Could not save submission")
-        return json_error("Your message could not be saved. Please try again.", 500)
+        return json_error(
+            "Your message could not be saved. Please try again.",
+            500,
+        )
 
     finally:
         connection.close()
 
-    return jsonify(
-        {
-            "success": True,
-            "message": "Your message has been submitted successfully.",
-            "submission_id": submission_id,
-            "id": submission_id,
-            "type": message_type,
-            "status": "New",
-        }
-    ), 201
+    return jsonify({
+        "success": True,
+        "message": "Your message has been submitted successfully.",
+        "submission_id": submission_id,
+        "id": submission_id,
+        "type": message_type,
+        "status": "New",
+    }), 201
 
 
 # ============================================================
-# PUBLIC ADMIN FEEDBACK / REPLIES
+# PUBLIC ADMIN REPLIES
 # ============================================================
 
 @app.route("/api/responses", methods=["GET"])
@@ -565,23 +531,23 @@ def get_public_responses():
             """
         ).fetchall()
 
-        responses = [response_public_dict(row) for row in rows]
+        responses = [
+            response_public_dict(row) for row in rows
+        ]
 
     finally:
         connection.close()
 
-    return jsonify(
-        {
-            "success": True,
-            "responses": responses,
-            "feedback": responses,
-            "data": responses,
-        }
-    )
+    return jsonify({
+        "success": True,
+        "responses": responses,
+        "feedback": responses,
+        "data": responses,
+    })
 
 
 # ============================================================
-# ADMIN AUTHENTICATION
+# ADMIN LOGIN AND LOGOUT
 # ============================================================
 
 @app.route("/admin", methods=["GET", "POST"])
@@ -611,10 +577,14 @@ def admin_login():
 
     if not username or not password:
         message = "Enter both username and password."
-        if request.is_json:
-            return json_error(message, 400)
 
-        return render_template("admin_login.html", error=message), 400
+        if request.is_json:
+            return json_error(message)
+
+        return render_template(
+            "admin_login.html",
+            error=message,
+        ), 400
 
     connection = get_db()
 
@@ -626,26 +596,30 @@ def admin_login():
     finally:
         connection.close()
 
-    if not admin or not check_password_hash(admin["password_hash"], password):
+    if (
+        not admin
+        or not check_password_hash(admin["password_hash"], password)
+    ):
         message = "Invalid administrator username or password."
 
         if request.is_json:
             return json_error(message, 401)
 
-        return render_template("admin_login.html", error=message), 401
+        return render_template(
+            "admin_login.html",
+            error=message,
+        ), 401
 
     session.clear()
     session["admin_id"] = admin["id"]
     session["admin_username"] = admin["username"]
 
     if request.is_json:
-        return jsonify(
-            {
-                "success": True,
-                "message": "Login successful.",
-                "redirect": url_for("admin_dashboard"),
-            }
-        )
+        return jsonify({
+            "success": True,
+            "message": "Login successful.",
+            "redirect": url_for("admin_dashboard"),
+        })
 
     return redirect(url_for("admin_dashboard"))
 
@@ -686,7 +660,11 @@ def admin_dashboard():
         ).fetchone()["total"]
 
         published_responses = connection.execute(
-            "SELECT COUNT(*) AS total FROM responses WHERE published = 1"
+            """
+            SELECT COUNT(*) AS total
+            FROM responses
+            WHERE published = 1
+            """
         ).fetchone()["total"]
 
         recent_rows = connection.execute(
@@ -694,25 +672,30 @@ def admin_dashboard():
             SELECT id, message_type, category, body, details,
                    audio_mime, audio_filename, status, review_note,
                    created_at, updated_at,
-                   CASE WHEN audio_base64 IS NOT NULL
-                        AND audio_base64 != ''
-                        THEN 1 ELSE 0 END AS has_audio
+                   CASE
+                       WHEN audio_base64 IS NOT NULL
+                       AND audio_base64 != ''
+                       THEN 1 ELSE 0
+                   END AS has_audio
             FROM submissions
             ORDER BY created_at DESC, id DESC
             LIMIT 10
             """
         ).fetchall()
 
+        recent_submissions = [
+            dict(row) for row in recent_rows
+        ]
+
     finally:
         connection.close()
 
-    recent_submissions = [
-        dict(row) for row in recent_rows
-    ]
-
     return render_template(
         "admin_dashboard.html",
-        admin_username=session.get("admin_username", "Administrator"),
+        admin_username=session.get(
+            "admin_username",
+            "Administrator",
+        ),
         total_submissions=total_submissions,
         new_submissions=new_submissions,
         total_responses=total_responses,
@@ -722,7 +705,7 @@ def admin_dashboard():
 
 
 # ============================================================
-# ADMIN SUBMISSIONS API
+# ADMIN SUBMISSION MANAGEMENT
 # ============================================================
 
 @app.route("/api/admin/submissions", methods=["GET"])
@@ -739,6 +722,7 @@ def admin_get_submissions():
         FROM submissions
         WHERE 1 = 1
     """
+
     parameters: list[Any] = []
 
     if status_filter:
@@ -759,30 +743,40 @@ def admin_get_submissions():
             )
         """
         pattern = f"%{search_term}%"
-        parameters.extend([pattern, pattern, pattern, pattern])
+        parameters.extend([
+            pattern, pattern, pattern, pattern
+        ])
 
     query += " ORDER BY created_at DESC, id DESC"
 
     connection = get_db()
 
     try:
-        rows = connection.execute(query, parameters).fetchall()
-        submissions = [submission_public_dict(row) for row in rows]
+        rows = connection.execute(
+            query,
+            parameters,
+        ).fetchall()
+
+        submissions = [
+            submission_public_dict(row) for row in rows
+        ]
+
     finally:
         connection.close()
 
-    return jsonify(
-        {
-            "success": True,
-            "submissions": submissions,
-            "messages": submissions,
-            "data": submissions,
-            "count": len(submissions),
-        }
-    )
+    return jsonify({
+        "success": True,
+        "submissions": submissions,
+        "messages": submissions,
+        "data": submissions,
+        "count": len(submissions),
+    })
 
 
-@app.route("/api/admin/submissions/<int:submission_id>", methods=["GET"])
+@app.route(
+    "/api/admin/submissions/<int:submission_id>",
+    methods=["GET"],
+)
 @admin_required
 def admin_get_submission(submission_id: int):
     connection = get_db()
@@ -805,7 +799,12 @@ def admin_get_submission(submission_id: int):
         return json_error("Submission not found.", 404)
 
     item = submission_public_dict(row)
-    return jsonify({"success": True, "submission": item, "data": item})
+
+    return jsonify({
+        "success": True,
+        "submission": item,
+        "data": item,
+    })
 
 
 @app.route(
@@ -814,7 +813,6 @@ def admin_get_submission(submission_id: int):
 )
 @admin_required
 def admin_get_submission_audio(submission_id: int):
-    """Return an audio data URL for the administrator's audio player."""
     connection = get_db()
 
     try:
@@ -833,20 +831,23 @@ def admin_get_submission_audio(submission_id: int):
         return json_error("Submission not found.", 404)
 
     if not row["audio_base64"]:
-        return json_error("This submission does not contain a voice note.", 404)
+        return json_error(
+            "This submission does not contain a voice note.",
+            404,
+        )
 
     mime_type = row["audio_mime"] or "audio/webm"
-    data_url = f"data:{mime_type};base64,{row['audio_base64']}"
-
-    return jsonify(
-        {
-            "success": True,
-            "audio": data_url,
-            "audio_url": data_url,
-            "mime_type": mime_type,
-            "filename": row["audio_filename"] or "voice-note",
-        }
+    data_url = (
+        f"data:{mime_type};base64,{row['audio_base64']}"
     )
+
+    return jsonify({
+        "success": True,
+        "audio": data_url,
+        "audio_url": data_url,
+        "mime_type": mime_type,
+        "filename": row["audio_filename"] or "voice-note",
+    })
 
 
 @app.route(
@@ -866,10 +867,10 @@ def admin_update_submission(submission_id: int):
     data = request_data()
 
     status_value = data.get("status")
-    review_note = data.get("review_note")
-
-    if review_note is None:
-        review_note = data.get("reviewNote")
+    review_note = data.get(
+        "review_note",
+        data.get("reviewNote"),
+    )
 
     connection = get_db()
 
@@ -900,7 +901,12 @@ def admin_update_submission(submission_id: int):
             SET status = ?, review_note = ?, updated_at = ?
             WHERE id = ?
             """,
-            (new_status, new_review_note, utc_now(), submission_id),
+            (
+                new_status,
+                new_review_note,
+                utc_now(),
+                submission_id,
+            ),
         )
 
         connection.commit()
@@ -908,24 +914,25 @@ def admin_update_submission(submission_id: int):
     except sqlite3.Error:
         connection.rollback()
         app.logger.exception("Could not update submission")
-        return json_error("Could not update the submission.", 500)
+        return json_error(
+            "Could not update the submission.",
+            500,
+        )
 
     finally:
         connection.close()
 
-    return jsonify(
-        {
-            "success": True,
-            "message": "Submission updated successfully.",
-            "id": submission_id,
-            "status": new_status,
-            "review_note": new_review_note,
-        }
-    )
+    return jsonify({
+        "success": True,
+        "message": "Submission updated successfully.",
+        "id": submission_id,
+        "status": new_status,
+        "review_note": new_review_note,
+    })
 
 
 # ============================================================
-# ADMIN RESPONSES / FEEDBACK API
+# ADMIN RESPONSE / FEEDBACK MANAGEMENT
 # ============================================================
 
 @app.route("/api/admin/responses", methods=["GET"])
@@ -943,19 +950,19 @@ def admin_get_responses():
             """
         ).fetchall()
 
-        responses = [response_public_dict(row) for row in rows]
+        responses = [
+            response_public_dict(row) for row in rows
+        ]
 
     finally:
         connection.close()
 
-    return jsonify(
-        {
-            "success": True,
-            "responses": responses,
-            "feedback": responses,
-            "data": responses,
-        }
-    )
+    return jsonify({
+        "success": True,
+        "responses": responses,
+        "feedback": responses,
+        "data": responses,
+    })
 
 
 @app.route("/api/admin/responses", methods=["POST"])
@@ -964,11 +971,12 @@ def admin_create_response():
     data = request_data()
 
     title = str(
-        data.get("title")
-        or "Campus Voice Feedback"
+        data.get("title") or "Campus Voice Feedback"
     ).strip()[:200]
 
-    category = str(data.get("category") or "General").strip()[:100]
+    category = str(
+        data.get("category") or "General"
+    ).strip()[:100]
 
     body = str(
         data.get("body")
@@ -978,9 +986,14 @@ def admin_create_response():
     ).strip()
 
     if not body:
-        return json_error("Please enter the feedback or response message.")
+        return json_error(
+            "Please enter the feedback or response message."
+        )
 
-    published_value = data.get("published", data.get("is_published", True))
+    published_value = data.get(
+        "published",
+        data.get("is_published", True),
+    )
 
     if isinstance(published_value, str):
         published = published_value.strip().lower() in {
@@ -1018,20 +1031,21 @@ def admin_create_response():
     except sqlite3.Error:
         connection.rollback()
         app.logger.exception("Could not save admin response")
-        return json_error("Could not save the response.", 500)
+        return json_error(
+            "Could not save the response.",
+            500,
+        )
 
     finally:
         connection.close()
 
-    return jsonify(
-        {
-            "success": True,
-            "message": "Feedback response saved successfully.",
-            "id": response_id,
-            "response_id": response_id,
-            "published": published,
-        }
-    ), 201
+    return jsonify({
+        "success": True,
+        "message": "Feedback response saved successfully.",
+        "id": response_id,
+        "response_id": response_id,
+        "published": published,
+    }), 201
 
 
 @app.route(
@@ -1056,14 +1070,25 @@ def admin_update_response(response_id: int):
         if existing is None:
             return json_error("Response not found.", 404)
 
-        title = str(data.get("title", existing["title"])).strip()[:200]
-        category = str(data.get("category", existing["category"])).strip()[:100]
-        body = str(data.get("body", existing["body"])).strip()
+        title = str(
+            data.get("title", existing["title"])
+        ).strip()[:200]
+
+        category = str(
+            data.get("category", existing["category"])
+        ).strip()[:100]
+
+        body = str(
+            data.get("body", existing["body"])
+        ).strip()
 
         published = existing["published"]
 
         if "published" in data or "is_published" in data:
-            value = data.get("published", data.get("is_published"))
+            value = data.get(
+                "published",
+                data.get("is_published"),
+            )
 
             if isinstance(value, str):
                 published = int(
@@ -1074,7 +1099,9 @@ def admin_update_response(response_id: int):
                 published = int(bool(value))
 
         if not body:
-            return json_error("The response message cannot be empty.")
+            return json_error(
+                "The response message cannot be empty."
+            )
 
         connection.execute(
             """
@@ -1098,19 +1125,20 @@ def admin_update_response(response_id: int):
     except sqlite3.Error:
         connection.rollback()
         app.logger.exception("Could not update response")
-        return json_error("Could not update the response.", 500)
+        return json_error(
+            "Could not update the response.",
+            500,
+        )
 
     finally:
         connection.close()
 
-    return jsonify(
-        {
-            "success": True,
-            "message": "Response updated successfully.",
-            "id": response_id,
-            "published": bool(published),
-        }
-    )
+    return jsonify({
+        "success": True,
+        "message": "Response updated successfully.",
+        "id": response_id,
+        "published": bool(published),
+    })
 
 
 @app.route(
@@ -1135,40 +1163,36 @@ def admin_delete_response(response_id: int):
     except sqlite3.Error:
         connection.rollback()
         app.logger.exception("Could not delete response")
-        return json_error("Could not delete the response.", 500)
+        return json_error(
+            "Could not delete the response.",
+            500,
+        )
 
     finally:
         connection.close()
 
-    return jsonify(
-        {
-            "success": True,
-            "message": "Response deleted successfully.",
-            "id": response_id,
-        }
-    )
+    return jsonify({
+        "success": True,
+        "message": "Response deleted successfully.",
+        "id": response_id,
+    })
 
 
 # ============================================================
-# ADMIN ACCOUNT MANAGEMENT COMMANDS
+# FLASK COMMANDS
 # ============================================================
 
 @app.cli.command("init-db")
 def init_db_command():
-    """Initialise database tables."""
     init_db()
     print("Campus Voice database initialised.")
 
 
 @app.cli.command("create-admin")
 def create_admin_command():
-    """Create or update the administrator from environment variables."""
     init_db()
     ensure_default_admin()
-    print(
-        "Admin setup checked. Ensure ADMIN_USERNAME and ADMIN_PASSWORD "
-        "are configured correctly."
-    )
+    print("Administrator setup checked.")
 
 
 # ============================================================
@@ -1178,14 +1202,19 @@ def create_admin_command():
 @app.errorhandler(404)
 def page_not_found(error):
     if request.path.startswith("/api/"):
-        return json_error("The requested API endpoint was not found.", 404)
-
+        return json_error(
+            "The requested API endpoint was not found.",
+            404,
+        )
     return "Page not found.", 404
 
 
 @app.errorhandler(413)
 def request_too_large(error):
-    message = "The uploaded file is too large. Maximum request size is 12 MB."
+    message = (
+        "The uploaded file is too large. "
+        "Maximum request size is 12 MB."
+    )
 
     if request.path.startswith("/api/"):
         return json_error(message, 413)
@@ -1195,24 +1224,32 @@ def request_too_large(error):
 
 @app.errorhandler(500)
 def internal_server_error(error):
-    app.logger.exception("Unexpected server error")
+    app.logger.error(
+        "Unexpected server error: %s",
+        error,
+    )
 
     if request.path.startswith("/api/"):
-        return json_error("An internal server error occurred.", 500)
+        return json_error(
+            "An internal server error occurred.",
+            500,
+        )
 
-    return "An internal server error occurred. Please try again later.", 500
+    return (
+        "An internal server error occurred. Please try again later.",
+        500,
+    )
 
 
 # ============================================================
 # LOCAL DEVELOPMENT ENTRY POINT
-# Render uses Gunicorn through the start command.
 # ============================================================
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
-    debug_mode = os.environ.get("FLASK_DEBUG", "0").lower() in {
-        "1", "true", "yes"
-    }
+    debug_mode = os.environ.get(
+        "FLASK_DEBUG", "0"
+    ).lower() in {"1", "true", "yes"}
 
     app.run(
         host="0.0.0.0",
