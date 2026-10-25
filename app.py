@@ -32,43 +32,43 @@ from werkzeug.utils import secure_filename
 BASE_DIR = Path(__file__).resolve().parent
 
 app = Flask(__name__)
-
-app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
-app.config["SESSION_COOKIE_HTTPONLY"] = True
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"] = (
-    os.environ.get("COOKIE_SECURE", "0").strip().lower()
-    in {"1", "true", "yes", "on"}
+app.config.update(
+    MAX_CONTENT_LENGTH=12 * 1024 * 1024,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.environ.get(
+        "COOKIE_SECURE", "0"
+    ).strip().lower() in {"1", "true", "yes", "on"},
 )
 
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 
-DATABASE_PATH = os.environ.get(
-    "DATABASE_PATH",
-    str(BASE_DIR / "campus_voice.db"),
-)
+# Set DATABASE_PATH to a persistent disk location in production.
+_raw_db_path = os.environ.get(
+    "DATABASE_PATH", str(BASE_DIR / "campus_voice.db")
+).strip()
 
-if DATABASE_PATH != ":memory:":
-    Path(DATABASE_PATH).expanduser().resolve().parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+if _raw_db_path == ":memory:":
+    DATABASE_PATH = _raw_db_path
+else:
+    _db_path = Path(_raw_db_path).expanduser()
+    if not _db_path.is_absolute():
+        _db_path = BASE_DIR / _db_path
+    DATABASE_PATH = str(_db_path.resolve())
+    Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_AUDIO_EXTENSIONS = {
     ".mp3", ".wav", ".ogg", ".oga", ".m4a",
     ".aac", ".webm", ".mp4", ".3gp",
 }
-
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
 
-# Administrator credentials.
-# Prefer setting ADMIN_USERNAME and ADMIN_PASSWORD in Render.
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "meru123").strip()
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "merupoly123@")
 
 
 # ============================================================
-# GENERAL HELPERS
+# DATABASE HELPERS
 # ============================================================
 
 def utc_now() -> str:
@@ -98,6 +98,19 @@ def request_data() -> dict[str, Any]:
     return request.form.to_dict()
 
 
+def admin_required(function):
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+        if not session.get("admin_id"):
+            if request.path.startswith("/api/"):
+                return json_error(
+                    "Please log in as an administrator.", 401
+                )
+            return redirect(url_for("admin_login"))
+        return function(*args, **kwargs)
+    return wrapper
+
+
 def get_audio_upload():
     for field in ("audio", "voice", "audio_file", "voice_note"):
         uploaded = request.files.get(field)
@@ -115,7 +128,6 @@ def decode_audio_data(value: str) -> tuple[str, str] | None:
         value.strip(),
         flags=re.DOTALL,
     )
-
     if not match:
         return None
 
@@ -158,23 +170,9 @@ def submission_public_dict(row: sqlite3.Row) -> dict[str, Any]:
 def response_public_dict(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     published = bool(item.get("published", 0))
-    item["is_published"] = published
     item["published"] = published
+    item["is_published"] = published
     return item
-
-
-def admin_required(function):
-    @wraps(function)
-    def wrapper(*args, **kwargs):
-        if not session.get("admin_id"):
-            if request.path.startswith("/api/"):
-                return json_error(
-                    "Please log in as an administrator.",
-                    401,
-                )
-            return redirect(url_for("admin_login"))
-        return function(*args, **kwargs)
-    return wrapper
 
 
 # ============================================================
@@ -183,7 +181,6 @@ def admin_required(function):
 
 def init_db() -> None:
     connection = get_db()
-
     try:
         connection.executescript("""
             CREATE TABLE IF NOT EXISTS admins (
@@ -218,18 +215,8 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL,
                 admin_id INTEGER,
                 FOREIGN KEY (admin_id)
-                    REFERENCES admins(id)
-                    ON DELETE SET NULL
+                    REFERENCES admins(id) ON DELETE SET NULL
             );
-
-            CREATE INDEX IF NOT EXISTS idx_submissions_created_at
-                ON submissions(created_at);
-
-            CREATE INDEX IF NOT EXISTS idx_submissions_status
-                ON submissions(status);
-
-            CREATE INDEX IF NOT EXISTS idx_responses_published
-                ON responses(published);
         """)
 
         migrations = {
@@ -268,46 +255,47 @@ def init_db() -> None:
                     f"PRAGMA table_info({table})"
                 ).fetchall()
             }
-
             for column, definition in columns.items():
                 if column not in existing:
                     connection.execute(
-                        f"ALTER TABLE {table} "
-                        f"ADD COLUMN {column} {definition}"
+                        f"ALTER TABLE {table} ADD COLUMN "
+                        f"{column} {definition}"
                     )
 
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_submissions_created_at
+            ON submissions(created_at)
+        """)
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_submissions_status
+            ON submissions(status)
+        """)
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_responses_published
+            ON responses(published)
+        """)
         connection.commit()
-
     finally:
         connection.close()
 
 
 def ensure_default_admin() -> None:
-    """Create the configured admin or update its password."""
-    username = ADMIN_USERNAME
-    password = ADMIN_PASSWORD
-
-    if not username or not password:
-        app.logger.error("Administrator credentials are missing.")
+    if not ADMIN_USERNAME or not ADMIN_PASSWORD:
+        app.logger.error("ADMIN_USERNAME or ADMIN_PASSWORD is missing.")
         return
 
     connection = get_db()
-
     try:
         existing = connection.execute(
             "SELECT id FROM admins WHERE username = ?",
-            (username,),
+            (ADMIN_USERNAME,),
         ).fetchone()
 
-        password_hash = generate_password_hash(password)
+        password_hash = generate_password_hash(ADMIN_PASSWORD)
 
         if existing:
             connection.execute(
-                """
-                UPDATE admins
-                SET password_hash = ?
-                WHERE id = ?
-                """,
+                "UPDATE admins SET password_hash = ? WHERE id = ?",
                 (password_hash, existing["id"]),
             )
         else:
@@ -316,11 +304,9 @@ def ensure_default_admin() -> None:
                 INSERT INTO admins (username, password_hash, created_at)
                 VALUES (?, ?, ?)
                 """,
-                (username, password_hash, utc_now()),
+                (ADMIN_USERNAME, password_hash, utc_now()),
             )
-
         connection.commit()
-
     finally:
         connection.close()
 
@@ -330,7 +316,7 @@ ensure_default_admin()
 
 
 # ============================================================
-# PUBLIC PAGES
+# PUBLIC PAGES AND DIAGNOSTICS
 # ============================================================
 
 @app.route("/")
@@ -342,23 +328,52 @@ def home():
 @app.route("/health")
 def health():
     connection = None
-
     try:
         connection = get_db()
         connection.execute("SELECT 1").fetchone()
         return jsonify({
             "status": "ok",
             "service": "Campus Voice",
-        }), 200
+            "database": "connected",
+        })
     except sqlite3.Error:
         app.logger.exception("Database health check failed")
         return jsonify({
             "status": "error",
             "service": "Campus Voice",
+            "database": "unavailable",
         }), 503
     finally:
-        if connection is not None:
+        if connection:
             connection.close()
+
+
+# Admin-only diagnostic: confirms which database the app is using.
+@app.route("/api/admin/diagnostics", methods=["GET"])
+@admin_required
+def admin_diagnostics():
+    connection = get_db()
+    try:
+        submissions = connection.execute(
+            "SELECT COUNT(*) AS total FROM submissions"
+        ).fetchone()["total"]
+        responses = connection.execute(
+            "SELECT COUNT(*) AS total FROM responses"
+        ).fetchone()["total"]
+        admins = connection.execute(
+            "SELECT COUNT(*) AS total FROM admins"
+        ).fetchone()["total"]
+
+        return jsonify({
+            "success": True,
+            "database_configured": True,
+            "database_path": DATABASE_PATH,
+            "submissions_count": submissions,
+            "responses_count": responses,
+            "admins_count": admins,
+        })
+    finally:
+        connection.close()
 
 
 # ============================================================
@@ -378,35 +393,30 @@ def create_submission():
     ).strip().lower()
 
     category = str(data.get("category") or "General").strip()[:100]
-
     body = str(
-        data.get("body")
-        or data.get("message")
-        or data.get("text")
-        or ""
+        data.get("body") or data.get("message")
+        or data.get("text") or ""
+    ).strip()
+    details = str(
+        data.get("details") or data.get("description") or ""
     ).strip()
 
-    details = str(
-        data.get("details")
-        or data.get("description")
-        or ""
-    ).strip()
+    if len(body) > 20000 or len(details) > 20000:
+        return json_error("Your message is too long.")
 
     uploaded_audio = get_audio_upload()
-
     audio_base64 = None
     audio_mime = None
     audio_filename = None
 
-    if uploaded_audio is not None:
+    if uploaded_audio:
         filename = secure_filename(uploaded_audio.filename or "")
         extension = Path(filename).suffix.lower()
 
-        if extension and extension not in ALLOWED_AUDIO_EXTENSIONS:
+        if not extension or extension not in ALLOWED_AUDIO_EXTENSIONS:
             return json_error("Unsupported audio file type.")
 
         audio_bytes = uploaded_audio.read(MAX_AUDIO_BYTES + 1)
-
         if len(audio_bytes) > MAX_AUDIO_BYTES:
             return json_error("The voice note must not exceed 10 MB.")
 
@@ -414,7 +424,6 @@ def create_submission():
             audio_base64 = base64.b64encode(
                 audio_bytes
             ).decode("ascii")
-
             audio_mime = (
                 uploaded_audio.mimetype or "application/octet-stream"
             )
@@ -422,48 +431,29 @@ def create_submission():
 
     else:
         audio_value = (
-            data.get("audio")
-            or data.get("voice")
-            or data.get("audio_data")
-            or data.get("audio_base64")
-            or ""
+            data.get("audio") or data.get("voice")
+            or data.get("audio_data") or data.get("audio_base64") or ""
         )
-
         decoded = decode_audio_data(str(audio_value))
-
         if decoded:
             audio_base64, audio_mime = decoded
             audio_filename = "voice-note"
-        elif (
-            isinstance(audio_value, str)
-            and audio_value.startswith("data:")
-        ):
-            return json_error(
-                "The supplied voice note is invalid or too large."
-            )
+        elif isinstance(audio_value, str) and audio_value.startswith("data:"):
+            return json_error("The supplied voice note is invalid or too large.")
 
     is_voice = (
-        "voice" in raw_type
-        or "audio" in raw_type
-        or bool(audio_base64)
+        "voice" in raw_type or "audio" in raw_type or bool(audio_base64)
     )
-
     message_type = "Voice note" if is_voice else "Text"
 
     if message_type == "Text" and not body and not details:
         return json_error("Please enter a message before submitting.")
 
-    if (
-        message_type == "Voice note"
-        and not audio_base64
-        and not body
-        and not details
-    ):
+    if message_type == "Voice note" and not audio_base64 and not body and not details:
         return json_error("Please record or upload a voice note.")
 
     timestamp = utc_now()
     connection = get_db()
-
     try:
         cursor = connection.execute(
             """
@@ -475,29 +465,28 @@ def create_submission():
             VALUES (?, ?, ?, ?, ?, ?, ?, 'New', '', ?, ?)
             """,
             (
-                message_type,
-                category or "General",
-                body,
-                details,
-                audio_base64,
-                audio_mime,
-                audio_filename,
-                timestamp,
-                timestamp,
+                message_type, category or "General", body, details,
+                audio_base64, audio_mime, audio_filename,
+                timestamp, timestamp,
             ),
         )
-
         submission_id = cursor.lastrowid
         connection.commit()
+
+        # Verify the row is readable before returning success.
+        saved = connection.execute(
+            "SELECT id FROM submissions WHERE id = ?",
+            (submission_id,),
+        ).fetchone()
+        if saved is None:
+            raise sqlite3.DatabaseError("Inserted submission was not found.")
 
     except sqlite3.Error:
         connection.rollback()
         app.logger.exception("Could not save submission")
         return json_error(
-            "Your message could not be saved. Please try again.",
-            500,
+            "Your message could not be saved. Please try again.", 500
         )
-
     finally:
         connection.close()
 
@@ -519,7 +508,6 @@ def create_submission():
 @app.route("/api/feedback/responses", methods=["GET"])
 def get_public_responses():
     connection = get_db()
-
     try:
         rows = connection.execute(
             """
@@ -530,11 +518,7 @@ def get_public_responses():
             ORDER BY created_at DESC, id DESC
             """
         ).fetchall()
-
-        responses = [
-            response_public_dict(row) for row in rows
-        ]
-
+        responses = [response_public_dict(row) for row in rows]
     finally:
         connection.close()
 
@@ -558,57 +542,35 @@ def admin_login():
     if request.method == "GET":
         if session.get("admin_id"):
             return redirect(url_for("admin_dashboard"))
-
         return render_template("admin_login.html")
 
     data = request_data()
-
     username = str(
-        data.get("username")
-        or data.get("admin_username")
-        or ""
+        data.get("username") or data.get("admin_username") or ""
     ).strip()
-
     password = str(
-        data.get("password")
-        or data.get("admin_password")
-        or ""
+        data.get("password") or data.get("admin_password") or ""
     )
 
     if not username or not password:
         message = "Enter both username and password."
-
         if request.is_json:
             return json_error(message)
-
-        return render_template(
-            "admin_login.html",
-            error=message,
-        ), 400
+        return render_template("admin_login.html", error=message), 400
 
     connection = get_db()
-
     try:
         admin = connection.execute(
-            "SELECT * FROM admins WHERE username = ?",
-            (username,),
+            "SELECT * FROM admins WHERE username = ?", (username,)
         ).fetchone()
     finally:
         connection.close()
 
-    if (
-        not admin
-        or not check_password_hash(admin["password_hash"], password)
-    ):
+    if not admin or not check_password_hash(admin["password_hash"], password):
         message = "Invalid administrator username or password."
-
         if request.is_json:
             return json_error(message, 401)
-
-        return render_template(
-            "admin_login.html",
-            error=message,
-        ), 401
+        return render_template("admin_login.html", error=message), 401
 
     session.clear()
     session["admin_id"] = admin["id"]
@@ -620,7 +582,6 @@ def admin_login():
             "message": "Login successful.",
             "redirect": url_for("admin_dashboard"),
         })
-
     return redirect(url_for("admin_dashboard"))
 
 
@@ -641,7 +602,6 @@ def admin_logout():
 @admin_required
 def admin_dashboard():
     connection = get_db()
-
     try:
         total_submissions = connection.execute(
             "SELECT COUNT(*) AS total FROM submissions"
@@ -649,8 +609,7 @@ def admin_dashboard():
 
         new_submissions = connection.execute(
             """
-            SELECT COUNT(*) AS total
-            FROM submissions
+            SELECT COUNT(*) AS total FROM submissions
             WHERE LOWER(status) IN ('new', 'pending')
             """
         ).fetchone()["total"]
@@ -660,42 +619,30 @@ def admin_dashboard():
         ).fetchone()["total"]
 
         published_responses = connection.execute(
-            """
-            SELECT COUNT(*) AS total
-            FROM responses
-            WHERE published = 1
-            """
+            "SELECT COUNT(*) AS total FROM responses WHERE published = 1"
         ).fetchone()["total"]
 
-        recent_rows = connection.execute(
-            """
-            SELECT id, message_type, category, body, details,
-                   audio_mime, audio_filename, status, review_note,
-                   created_at, updated_at,
-                   CASE
-                       WHEN audio_base64 IS NOT NULL
-                       AND audio_base64 != ''
-                       THEN 1 ELSE 0
-                   END AS has_audio
-            FROM submissions
-            ORDER BY created_at DESC, id DESC
-            LIMIT 10
-            """
-        ).fetchall()
-
         recent_submissions = [
-            dict(row) for row in recent_rows
+            dict(row) for row in connection.execute(
+                """
+                SELECT id, message_type, category, body, details,
+                       audio_mime, audio_filename, status, review_note,
+                       created_at, updated_at,
+                       CASE WHEN audio_base64 IS NOT NULL
+                            AND audio_base64 != ''
+                            THEN 1 ELSE 0 END AS has_audio
+                FROM submissions
+                ORDER BY created_at DESC, id DESC
+                LIMIT 10
+                """
+            ).fetchall()
         ]
-
     finally:
         connection.close()
 
     return render_template(
         "admin_dashboard.html",
-        admin_username=session.get(
-            "admin_username",
-            "Administrator",
-        ),
+        admin_username=session.get("admin_username", "Administrator"),
         total_submissions=total_submissions,
         new_submissions=new_submissions,
         total_responses=total_responses,
@@ -719,10 +666,8 @@ def admin_get_submissions():
         SELECT id, message_type, category, body, details,
                audio_base64, audio_mime, audio_filename,
                status, review_note, created_at, updated_at
-        FROM submissions
-        WHERE 1 = 1
+        FROM submissions WHERE 1 = 1
     """
-
     parameters: list[Any] = []
 
     if status_filter:
@@ -735,32 +680,18 @@ def admin_get_submissions():
 
     if search_term:
         query += """
-            AND (
-                body LIKE ?
-                OR details LIKE ?
-                OR category LIKE ?
-                OR CAST(id AS TEXT) LIKE ?
-            )
+            AND (body LIKE ? OR details LIKE ? OR category LIKE ?
+                 OR CAST(id AS TEXT) LIKE ?)
         """
         pattern = f"%{search_term}%"
-        parameters.extend([
-            pattern, pattern, pattern, pattern
-        ])
+        parameters.extend([pattern] * 4)
 
     query += " ORDER BY created_at DESC, id DESC"
 
     connection = get_db()
-
     try:
-        rows = connection.execute(
-            query,
-            parameters,
-        ).fetchall()
-
-        submissions = [
-            submission_public_dict(row) for row in rows
-        ]
-
+        rows = connection.execute(query, parameters).fetchall()
+        submissions = [submission_public_dict(row) for row in rows]
     finally:
         connection.close()
 
@@ -773,22 +704,17 @@ def admin_get_submissions():
     })
 
 
-@app.route(
-    "/api/admin/submissions/<int:submission_id>",
-    methods=["GET"],
-)
+@app.route("/api/admin/submissions/<int:submission_id>", methods=["GET"])
 @admin_required
 def admin_get_submission(submission_id: int):
     connection = get_db()
-
     try:
         row = connection.execute(
             """
             SELECT id, message_type, category, body, details,
                    audio_base64, audio_mime, audio_filename,
                    status, review_note, created_at, updated_at
-            FROM submissions
-            WHERE id = ?
+            FROM submissions WHERE id = ?
             """,
             (submission_id,),
         ).fetchone()
@@ -799,12 +725,7 @@ def admin_get_submission(submission_id: int):
         return json_error("Submission not found.", 404)
 
     item = submission_public_dict(row)
-
-    return jsonify({
-        "success": True,
-        "submission": item,
-        "data": item,
-    })
+    return jsonify({"success": True, "submission": item, "data": item})
 
 
 @app.route(
@@ -814,13 +735,11 @@ def admin_get_submission(submission_id: int):
 @admin_required
 def admin_get_submission_audio(submission_id: int):
     connection = get_db()
-
     try:
         row = connection.execute(
             """
             SELECT audio_base64, audio_mime, audio_filename
-            FROM submissions
-            WHERE id = ?
+            FROM submissions WHERE id = ?
             """,
             (submission_id,),
         ).fetchone()
@@ -829,17 +748,11 @@ def admin_get_submission_audio(submission_id: int):
 
     if row is None:
         return json_error("Submission not found.", 404)
-
     if not row["audio_base64"]:
-        return json_error(
-            "This submission does not contain a voice note.",
-            404,
-        )
+        return json_error("This submission does not contain a voice note.", 404)
 
     mime_type = row["audio_mime"] or "audio/webm"
-    data_url = (
-        f"data:{mime_type};base64,{row['audio_base64']}"
-    )
+    data_url = f"data:{mime_type};base64,{row['audio_base64']}"
 
     return jsonify({
         "success": True,
@@ -865,19 +778,13 @@ def admin_get_submission_audio(submission_id: int):
 @admin_required
 def admin_update_submission(submission_id: int):
     data = request_data()
-
     status_value = data.get("status")
-    review_note = data.get(
-        "review_note",
-        data.get("reviewNote"),
-    )
+    review_note = data.get("review_note", data.get("reviewNote"))
 
     connection = get_db()
-
     try:
         existing = connection.execute(
-            "SELECT * FROM submissions WHERE id = ?",
-            (submission_id,),
+            "SELECT * FROM submissions WHERE id = ?", (submission_id,)
         ).fetchone()
 
         if existing is None:
@@ -885,40 +792,25 @@ def admin_update_submission(submission_id: int):
 
         new_status = (
             normalise_status(str(status_value))
-            if status_value is not None
-            else existing["status"]
+            if status_value is not None else existing["status"]
         )
-
         new_review_note = (
             str(review_note).strip()[:5000]
-            if review_note is not None
-            else existing["review_note"]
+            if review_note is not None else existing["review_note"]
         )
 
         connection.execute(
             """
-            UPDATE submissions
-            SET status = ?, review_note = ?, updated_at = ?
+            UPDATE submissions SET status = ?, review_note = ?, updated_at = ?
             WHERE id = ?
             """,
-            (
-                new_status,
-                new_review_note,
-                utc_now(),
-                submission_id,
-            ),
+            (new_status, new_review_note, utc_now(), submission_id),
         )
-
         connection.commit()
-
     except sqlite3.Error:
         connection.rollback()
         app.logger.exception("Could not update submission")
-        return json_error(
-            "Could not update the submission.",
-            500,
-        )
-
+        return json_error("Could not update the submission.", 500)
     finally:
         connection.close()
 
@@ -939,21 +831,15 @@ def admin_update_submission(submission_id: int):
 @admin_required
 def admin_get_responses():
     connection = get_db()
-
     try:
         rows = connection.execute(
             """
             SELECT id, title, category, body, published,
                    created_at, updated_at, admin_id
-            FROM responses
-            ORDER BY created_at DESC, id DESC
+            FROM responses ORDER BY created_at DESC, id DESC
             """
         ).fetchall()
-
-        responses = [
-            response_public_dict(row) for row in rows
-        ]
-
+        responses = [response_public_dict(row) for row in rows]
     finally:
         connection.close()
 
@@ -969,32 +855,21 @@ def admin_get_responses():
 @admin_required
 def admin_create_response():
     data = request_data()
-
-    title = str(
-        data.get("title") or "Campus Voice Feedback"
-    ).strip()[:200]
-
-    category = str(
-        data.get("category") or "General"
-    ).strip()[:100]
-
+    title = str(data.get("title") or "Campus Voice Feedback").strip()[:200]
+    category = str(data.get("category") or "General").strip()[:100]
     body = str(
-        data.get("body")
-        or data.get("message")
-        or data.get("response")
-        or ""
+        data.get("body") or data.get("message")
+        or data.get("response") or ""
     ).strip()
 
     if not body:
-        return json_error(
-            "Please enter the feedback or response message."
-        )
+        return json_error("Please enter the feedback or response message.")
+    if len(body) > 20000:
+        return json_error("The response is too long.")
 
     published_value = data.get(
-        "published",
-        data.get("is_published", True),
+        "published", data.get("is_published", True)
     )
-
     if isinstance(published_value, str):
         published = published_value.strip().lower() in {
             "1", "true", "yes", "on", "published"
@@ -1004,38 +879,30 @@ def admin_create_response():
 
     timestamp = utc_now()
     connection = get_db()
-
     try:
         cursor = connection.execute(
             """
             INSERT INTO responses (
                 title, category, body, published,
                 created_at, updated_at, admin_id
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                title,
+                title or "Campus Voice Feedback",
                 category or "General",
                 body,
-                1 if published else 0,
+                int(published),
                 timestamp,
                 timestamp,
                 session.get("admin_id"),
             ),
         )
-
         response_id = cursor.lastrowid
         connection.commit()
-
     except sqlite3.Error:
         connection.rollback()
         app.logger.exception("Could not save admin response")
-        return json_error(
-            "Could not save the response.",
-            500,
-        )
-
+        return json_error("Could not save the response.", 500)
     finally:
         connection.close()
 
@@ -1060,48 +927,32 @@ def admin_create_response():
 def admin_update_response(response_id: int):
     data = request_data()
     connection = get_db()
-
     try:
         existing = connection.execute(
-            "SELECT * FROM responses WHERE id = ?",
-            (response_id,),
+            "SELECT * FROM responses WHERE id = ?", (response_id,)
         ).fetchone()
 
         if existing is None:
             return json_error("Response not found.", 404)
 
-        title = str(
-            data.get("title", existing["title"])
-        ).strip()[:200]
+        title = str(data.get("title", existing["title"])).strip()[:200]
+        category = str(data.get("category", existing["category"])).strip()[:100]
+        body = str(data.get("body", existing["body"])).strip()
 
-        category = str(
-            data.get("category", existing["category"])
-        ).strip()[:100]
-
-        body = str(
-            data.get("body", existing["body"])
-        ).strip()
-
-        published = existing["published"]
-
+        published = int(existing["published"])
         if "published" in data or "is_published" in data:
-            value = data.get(
-                "published",
-                data.get("is_published"),
-            )
-
+            value = data.get("published", data.get("is_published"))
             if isinstance(value, str):
-                published = int(
-                    value.strip().lower()
-                    in {"1", "true", "yes", "on", "published"}
-                )
+                published = int(value.strip().lower() in {
+                    "1", "true", "yes", "on", "published"
+                })
             else:
                 published = int(bool(value))
 
         if not body:
-            return json_error(
-                "The response message cannot be empty."
-            )
+            return json_error("The response message cannot be empty.")
+        if len(body) > 20000:
+            return json_error("The response is too long.")
 
         connection.execute(
             """
@@ -1119,17 +970,11 @@ def admin_update_response(response_id: int):
                 response_id,
             ),
         )
-
         connection.commit()
-
     except sqlite3.Error:
         connection.rollback()
         app.logger.exception("Could not update response")
-        return json_error(
-            "Could not update the response.",
-            500,
-        )
-
+        return json_error("Could not update the response.", 500)
     finally:
         connection.close()
 
@@ -1148,26 +993,17 @@ def admin_update_response(response_id: int):
 @admin_required
 def admin_delete_response(response_id: int):
     connection = get_db()
-
     try:
         cursor = connection.execute(
-            "DELETE FROM responses WHERE id = ?",
-            (response_id,),
+            "DELETE FROM responses WHERE id = ?", (response_id,)
         )
-
         connection.commit()
-
         if cursor.rowcount == 0:
             return json_error("Response not found.", 404)
-
     except sqlite3.Error:
         connection.rollback()
         app.logger.exception("Could not delete response")
-        return json_error(
-            "Could not delete the response.",
-            500,
-        )
-
+        return json_error("Could not delete the response.", 500)
     finally:
         connection.close()
 
@@ -1185,7 +1021,7 @@ def admin_delete_response(response_id: int):
 @app.cli.command("init-db")
 def init_db_command():
     init_db()
-    print("Campus Voice database initialised.")
+    print(f"Campus Voice database initialised: {DATABASE_PATH}")
 
 
 @app.cli.command("create-admin")
@@ -1202,43 +1038,24 @@ def create_admin_command():
 @app.errorhandler(404)
 def page_not_found(error):
     if request.path.startswith("/api/"):
-        return json_error(
-            "The requested API endpoint was not found.",
-            404,
-        )
+        return json_error("The requested API endpoint was not found.", 404)
     return "Page not found.", 404
 
 
 @app.errorhandler(413)
 def request_too_large(error):
-    message = (
-        "The uploaded file is too large. "
-        "Maximum request size is 12 MB."
-    )
-
+    message = "The uploaded file is too large. Maximum request size is 12 MB."
     if request.path.startswith("/api/"):
         return json_error(message, 413)
-
     return message, 413
 
 
 @app.errorhandler(500)
 def internal_server_error(error):
-    app.logger.error(
-        "Unexpected server error: %s",
-        error,
-    )
-
+    app.logger.error("Unexpected server error: %s", error)
     if request.path.startswith("/api/"):
-        return json_error(
-            "An internal server error occurred.",
-            500,
-        )
-
-    return (
-        "An internal server error occurred. Please try again later.",
-        500,
-    )
+        return json_error("An internal server error occurred.", 500)
+    return "An internal server error occurred. Please try again later.", 500
 
 
 # ============================================================
@@ -1247,12 +1064,7 @@ def internal_server_error(error):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
-    debug_mode = os.environ.get(
-        "FLASK_DEBUG", "0"
-    ).lower() in {"1", "true", "yes"}
-
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        debug=debug_mode,
-    )
+    debug_mode = os.environ.get("FLASK_DEBUG", "0").lower() in {
+        "1", "true", "yes"
+    }
+    app.run(host="0.0.0.0", port=port, debug=debug_mode)
