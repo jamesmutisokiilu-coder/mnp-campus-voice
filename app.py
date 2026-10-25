@@ -1,532 +1,299 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import os
 import re
 import secrets
 import sqlite3
+import logging
 from datetime import datetime, timezone
-from functools import wraps
 from pathlib import Path
-from typing import Any
+from functools import wraps
+from uuid import uuid4
 
 from flask import (
     Flask,
+    request,
     jsonify,
     redirect,
-    render_template,
-    request,
-    session,
     url_for,
+    session,
+    flash,
+    render_template,
+    render_template_string,
+    send_from_directory,
+    abort,
 )
-from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
 
 # ============================================================
-# APPLICATION CONFIGURATION
+# CAMPUS VOICE - APPLICATION CONFIGURATION
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
+INSTANCE_DIR = BASE_DIR / "instance"
+UPLOAD_DIR = INSTANCE_DIR / "private_uploads"
+TEMPLATE_DIR = BASE_DIR / "templates"
 
-app = Flask(__name__)
-app.config.update(
-    MAX_CONTENT_LENGTH=12 * 1024 * 1024,
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=os.environ.get(
-        "COOKIE_SECURE", "0"
-    ).strip().lower() in {"1", "true", "yes", "on"},
+INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+app = Flask(
+    __name__,
+    template_folder=str(TEMPLATE_DIR),
 )
 
-app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+app.config.update(
+    SECRET_KEY=os.environ.get("FLASK_SECRET_KEY", "change-this-development-secret"),
+    MAX_CONTENT_LENGTH=10 * 1024 * 1024,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=(
+        os.environ.get("COOKIE_SECURE", "").lower() == "true"
+        or os.environ.get("RENDER", "").lower() == "true"
+    ),
+    PERMANENT_SESSION_LIFETIME=3600,
+)
 
-# Set DATABASE_PATH to a persistent disk location in production.
-_raw_db_path = os.environ.get(
-    "DATABASE_PATH", str(BASE_DIR / "campus_voice.db")
-).strip()
-
-if _raw_db_path == ":memory:":
-    DATABASE_PATH = _raw_db_path
-else:
-    _db_path = Path(_raw_db_path).expanduser()
-    if not _db_path.is_absolute():
-        _db_path = BASE_DIR / _db_path
-    DATABASE_PATH = str(_db_path.resolve())
-    Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
+DATABASE = Path(
+    os.environ.get(
+        "CAMPUS_VOICE_DATABASE",
+        str(INSTANCE_DIR / "campus_voice.db"),
+    )
+)
 
 ALLOWED_AUDIO_EXTENSIONS = {
     ".mp3", ".wav", ".ogg", ".oga", ".m4a",
-    ".aac", ".webm", ".mp4", ".3gp",
+    ".aac", ".webm", ".mp4", ".mpeg", ".3gp",
 }
-MAX_AUDIO_BYTES = 10 * 1024 * 1024
 
-ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "meru123").strip()
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "merupoly123@")
+ALLOWED_CATEGORIES = {
+    "Teaching and learning",
+    "Examinations and assessment",
+    "Library and learning resources",
+    "Hostels and accommodation",
+    "Food and catering",
+    "Fees and student services",
+    "Facilities, sanitation and safety",
+    "Student welfare",
+    "Suggestion or innovation",
+    "Other",
+}
+
+ALLOWED_STATUSES = {
+    "pending",
+    "under_review",
+    "approved",
+    "rejected",
+    "resolved",
+}
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("campus_voice")
 
 
 # ============================================================
-# DATABASE HELPERS
+# DATABASE
 # ============================================================
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def get_db() -> sqlite3.Connection:
-    connection = sqlite3.connect(DATABASE_PATH, timeout=30)
+def get_db():
+    """Return a SQLite connection with dictionary-like rows."""
+    connection = sqlite3.connect(str(DATABASE), timeout=30)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA busy_timeout = 30000")
     return connection
 
 
-def json_error(message: str, status: int = 400):
-    return jsonify({
-        "success": False,
-        "error": message,
-        "message": message,
-    }), status
+def utc_now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def request_data() -> dict[str, Any]:
-    if request.is_json:
-        data = request.get_json(silent=True)
-        return data if isinstance(data, dict) else {}
-    return request.form.to_dict()
-
-
-def admin_required(function):
-    @wraps(function)
-    def wrapper(*args, **kwargs):
-        if not session.get("admin_id"):
-            if request.path.startswith("/api/"):
-                return json_error(
-                    "Please log in as an administrator.", 401
-                )
-            return redirect(url_for("admin_login"))
-        return function(*args, **kwargs)
-    return wrapper
-
-
-def get_audio_upload():
-    for field in ("audio", "voice", "audio_file", "voice_note"):
-        uploaded = request.files.get(field)
-        if uploaded and uploaded.filename:
-            return uploaded
-    return None
-
-
-def decode_audio_data(value: str) -> tuple[str, str] | None:
-    if not value or not isinstance(value, str):
-        return None
-
-    match = re.fullmatch(
-        r"data:([^;,]+);base64,(.+)",
-        value.strip(),
-        flags=re.DOTALL,
-    )
-    if not match:
-        return None
-
-    mime_type = match.group(1).strip().lower()
-    encoded = re.sub(r"\s+", "", match.group(2))
-
-    try:
-        decoded = base64.b64decode(encoded, validate=True)
-    except (binascii.Error, ValueError):
-        return None
-
-    if not decoded or len(decoded) > MAX_AUDIO_BYTES:
-        return None
-
-    return base64.b64encode(decoded).decode("ascii"), mime_type
-
-
-def normalise_status(value: str | None) -> str:
-    allowed = {
-        "new": "New",
-        "pending": "Pending",
-        "reviewed": "Reviewed",
-        "in progress": "In Progress",
-        "in_progress": "In Progress",
-        "resolved": "Resolved",
-        "closed": "Closed",
-    }
-    return allowed.get((value or "New").strip().lower(), "New")
-
-
-def submission_public_dict(row: sqlite3.Row) -> dict[str, Any]:
-    item = dict(row)
-    item["type"] = item.get("message_type", "Text")
-    item["review_note"] = item.get("review_note") or ""
-    item["has_audio"] = bool(item.get("audio_base64"))
-    item.pop("audio_base64", None)
-    return item
-
-
-def response_public_dict(row: sqlite3.Row) -> dict[str, Any]:
-    item = dict(row)
-    published = bool(item.get("published", 0))
-    item["published"] = published
-    item["is_published"] = published
-    return item
-
-
-# ============================================================
-# DATABASE INITIALISATION AND MIGRATIONS
-# ============================================================
-
-def init_db() -> None:
-    connection = get_db()
-    try:
-        connection.executescript("""
+def init_db():
+    """Create the database tables if they do not exist."""
+    with get_db() as db:
+        db.execute("""
             CREATE TABLE IF NOT EXISTS admins (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL
-            );
+            )
+        """)
 
+        db.execute("""
             CREATE TABLE IF NOT EXISTS submissions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_type TEXT NOT NULL DEFAULT 'Text',
-                category TEXT NOT NULL DEFAULT 'General',
+                reference TEXT NOT NULL UNIQUE,
+                category TEXT NOT NULL,
+                submission_type TEXT NOT NULL,
                 body TEXT NOT NULL DEFAULT '',
                 details TEXT NOT NULL DEFAULT '',
-                audio_base64 TEXT,
-                audio_mime TEXT,
                 audio_filename TEXT,
-                status TEXT NOT NULL DEFAULT 'New',
-                review_note TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                admin_note TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
-            );
+            )
+        """)
 
+        db.execute("""
             CREATE TABLE IF NOT EXISTS responses (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL DEFAULT 'Campus Voice Feedback',
-                category TEXT NOT NULL DEFAULT 'General',
+                submission_id INTEGER,
+                title TEXT NOT NULL,
                 body TEXT NOT NULL,
-                published INTEGER NOT NULL DEFAULT 1,
+                category TEXT NOT NULL DEFAULT 'General announcement',
+                published INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                admin_id INTEGER,
-                FOREIGN KEY (admin_id)
-                    REFERENCES admins(id) ON DELETE SET NULL
-            );
+                published_at TEXT,
+                FOREIGN KEY (submission_id)
+                    REFERENCES submissions(id)
+                    ON DELETE SET NULL
+            )
         """)
 
-        migrations = {
-            "admins": {
-                "password_hash": "TEXT NOT NULL DEFAULT ''",
-                "created_at": "TEXT NOT NULL DEFAULT ''",
-            },
-            "submissions": {
-                "message_type": "TEXT NOT NULL DEFAULT 'Text'",
-                "category": "TEXT NOT NULL DEFAULT 'General'",
-                "body": "TEXT NOT NULL DEFAULT ''",
-                "details": "TEXT NOT NULL DEFAULT ''",
-                "audio_base64": "TEXT",
-                "audio_mime": "TEXT",
-                "audio_filename": "TEXT",
-                "status": "TEXT NOT NULL DEFAULT 'New'",
-                "review_note": "TEXT NOT NULL DEFAULT ''",
-                "created_at": "TEXT NOT NULL DEFAULT ''",
-                "updated_at": "TEXT NOT NULL DEFAULT ''",
-            },
-            "responses": {
-                "title": "TEXT NOT NULL DEFAULT 'Campus Voice Feedback'",
-                "category": "TEXT NOT NULL DEFAULT 'General'",
-                "body": "TEXT NOT NULL DEFAULT ''",
-                "published": "INTEGER NOT NULL DEFAULT 1",
-                "created_at": "TEXT NOT NULL DEFAULT ''",
-                "updated_at": "TEXT NOT NULL DEFAULT ''",
-                "admin_id": "INTEGER",
-            },
-        }
-
-        for table, columns in migrations.items():
-            existing = {
-                row["name"]
-                for row in connection.execute(
-                    f"PRAGMA table_info({table})"
-                ).fetchall()
-            }
-            for column, definition in columns.items():
-                if column not in existing:
-                    connection.execute(
-                        f"ALTER TABLE {table} ADD COLUMN "
-                        f"{column} {definition}"
-                    )
-
-        connection.execute("""
-            CREATE INDEX IF NOT EXISTS idx_submissions_created_at
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_submissions_created
             ON submissions(created_at)
         """)
-        connection.execute("""
+
+        db.execute("""
             CREATE INDEX IF NOT EXISTS idx_submissions_status
             ON submissions(status)
         """)
-        connection.execute("""
+
+        db.execute("""
             CREATE INDEX IF NOT EXISTS idx_responses_published
-            ON responses(published)
+            ON responses(published, published_at)
         """)
-        connection.commit()
-    finally:
-        connection.close()
 
+        # Create the first administrator only if the admin table is empty.
+        # Set these environment variables before the first run in production.
+        admin_count = db.execute(
+            "SELECT COUNT(*) FROM admins"
+        ).fetchone()[0]
 
-def ensure_default_admin() -> None:
-    if not ADMIN_USERNAME or not ADMIN_PASSWORD:
-        app.logger.error("ADMIN_USERNAME or ADMIN_PASSWORD is missing.")
-        return
+        if admin_count == 0:
+            username = os.environ.get(
+                "CAMPUS_ADMIN_USERNAME", "meru123"
+            ).strip()
 
-    connection = get_db()
-    try:
-        existing = connection.execute(
-            "SELECT id FROM admins WHERE username = ?",
-            (ADMIN_USERNAME,),
-        ).fetchone()
-
-        password_hash = generate_password_hash(ADMIN_PASSWORD)
-
-        if existing:
-            connection.execute(
-                "UPDATE admins SET password_hash = ? WHERE id = ?",
-                (password_hash, existing["id"]),
+            password = os.environ.get(
+                "CAMPUS_ADMIN_PASSWORD", "merupolu@123"
             )
-        else:
-            connection.execute(
+
+            if not username or not password:
+                raise RuntimeError(
+                    "Set CAMPUS_ADMIN_USERNAME and CAMPUS_ADMIN_PASSWORD."
+                )
+
+            db.execute(
                 """
                 INSERT INTO admins (username, password_hash, created_at)
                 VALUES (?, ?, ?)
                 """,
-                (ADMIN_USERNAME, password_hash, utc_now()),
+                (
+                    username,
+                    generate_password_hash(password),
+                    utc_now(),
+                ),
             )
-        connection.commit()
-    finally:
-        connection.close()
+
+            logger.warning(
+                "Initial administrator created. Change default credentials "
+                "and set environment variables before production deployment."
+            )
 
 
 init_db()
-ensure_default_admin()
 
 
 # ============================================================
-# PUBLIC PAGES AND DIAGNOSTICS
+# SECURITY AND HELPER FUNCTIONS
+# ============================================================
+
+def json_error(message, status=400):
+    return jsonify({"ok": False, "error": message}), status
+
+
+def admin_required(function):
+    @wraps(function)
+    def decorated(*args, **kwargs):
+        if not session.get("admin_id"):
+            if request.path.startswith("/api/"):
+                return json_error("Administrator login required.", 401)
+
+            return redirect(url_for("admin_login"))
+
+        return function(*args, **kwargs)
+
+    return decorated
+
+
+def new_reference():
+    """Create a non-sequential reference for a submission."""
+    return "CV-" + secrets.token_hex(4).upper()
+
+
+def valid_audio_file(file):
+    """Basic extension and declared MIME-type validation."""
+    if not file or not file.filename:
+        return False
+
+    extension = Path(secure_filename(file.filename)).suffix.lower()
+
+    return (
+        extension in ALLOWED_AUDIO_EXTENSIONS
+        and file.mimetype.lower().startswith("audio/")
+        or extension == ".mp4"
+        and file.mimetype.lower().startswith(("audio/", "video/"))
+    )
+
+
+def submission_to_dict(row):
+    """Convert a private submission row into an admin-only response."""
+    item = dict(row)
+
+    # Never expose the private stored filename to the public API.
+    item.pop("audio_filename", None)
+
+    item["has_audio"] = bool(row["audio_filename"])
+    item["date"] = item.get("created_at")
+
+    return item
+
+
+def get_admin_submission(reference):
+    with get_db() as db:
+        row = db.execute(
+            "SELECT * FROM submissions WHERE reference = ?",
+            (reference,),
+        ).fetchone()
+
+    return row
+
+
+# ============================================================
+# HOMEPAGE
 # ============================================================
 
 @app.route("/")
-@app.route("/home")
-def home():
+def index():
+    """
+    Render the user's index.html from the templates directory.
+    """
     return render_template("index.html")
 
 
 @app.route("/health")
 def health():
-    connection = None
-    try:
-        connection = get_db()
-        connection.execute("SELECT 1").fetchone()
-        return jsonify({
-            "status": "ok",
-            "service": "Campus Voice",
-            "database": "connected",
-        })
-    except sqlite3.Error:
-        app.logger.exception("Database health check failed")
-        return jsonify({
-            "status": "error",
-            "service": "Campus Voice",
-            "database": "unavailable",
-        }), 503
-    finally:
-        if connection:
-            connection.close()
-
-
-# Admin-only diagnostic: confirms which database the app is using.
-@app.route("/api/admin/diagnostics", methods=["GET"])
-@admin_required
-def admin_diagnostics():
-    connection = get_db()
-    try:
-        submissions = connection.execute(
-            "SELECT COUNT(*) AS total FROM submissions"
-        ).fetchone()["total"]
-        responses = connection.execute(
-            "SELECT COUNT(*) AS total FROM responses"
-        ).fetchone()["total"]
-        admins = connection.execute(
-            "SELECT COUNT(*) AS total FROM admins"
-        ).fetchone()["total"]
-
-        return jsonify({
-            "success": True,
-            "database_configured": True,
-            "database_path": DATABASE_PATH,
-            "submissions_count": submissions,
-            "responses_count": responses,
-            "admins_count": admins,
-        })
-    finally:
-        connection.close()
-
-
-# ============================================================
-# PUBLIC SUBMISSIONS
-# ============================================================
-
-@app.route("/api/submissions", methods=["POST"])
-@app.route("/api/feedback", methods=["POST"])
-def create_submission():
-    data = request_data()
-
-    raw_type = str(
-        data.get("type")
-        or data.get("message_type")
-        or data.get("messageType")
-        or ""
-    ).strip().lower()
-
-    category = str(data.get("category") or "General").strip()[:100]
-    body = str(
-        data.get("body") or data.get("message")
-        or data.get("text") or ""
-    ).strip()
-    details = str(
-        data.get("details") or data.get("description") or ""
-    ).strip()
-
-    if len(body) > 20000 or len(details) > 20000:
-        return json_error("Your message is too long.")
-
-    uploaded_audio = get_audio_upload()
-    audio_base64 = None
-    audio_mime = None
-    audio_filename = None
-
-    if uploaded_audio:
-        filename = secure_filename(uploaded_audio.filename or "")
-        extension = Path(filename).suffix.lower()
-
-        if not extension or extension not in ALLOWED_AUDIO_EXTENSIONS:
-            return json_error("Unsupported audio file type.")
-
-        audio_bytes = uploaded_audio.read(MAX_AUDIO_BYTES + 1)
-        if len(audio_bytes) > MAX_AUDIO_BYTES:
-            return json_error("The voice note must not exceed 10 MB.")
-
-        if audio_bytes:
-            audio_base64 = base64.b64encode(
-                audio_bytes
-            ).decode("ascii")
-            audio_mime = (
-                uploaded_audio.mimetype or "application/octet-stream"
-            )
-            audio_filename = filename or "voice-note"
-
-    else:
-        audio_value = (
-            data.get("audio") or data.get("voice")
-            or data.get("audio_data") or data.get("audio_base64") or ""
-        )
-        decoded = decode_audio_data(str(audio_value))
-        if decoded:
-            audio_base64, audio_mime = decoded
-            audio_filename = "voice-note"
-        elif isinstance(audio_value, str) and audio_value.startswith("data:"):
-            return json_error("The supplied voice note is invalid or too large.")
-
-    is_voice = (
-        "voice" in raw_type or "audio" in raw_type or bool(audio_base64)
-    )
-    message_type = "Voice note" if is_voice else "Text"
-
-    if message_type == "Text" and not body and not details:
-        return json_error("Please enter a message before submitting.")
-
-    if message_type == "Voice note" and not audio_base64 and not body and not details:
-        return json_error("Please record or upload a voice note.")
-
-    timestamp = utc_now()
-    connection = get_db()
-    try:
-        cursor = connection.execute(
-            """
-            INSERT INTO submissions (
-                message_type, category, body, details,
-                audio_base64, audio_mime, audio_filename,
-                status, review_note, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'New', '', ?, ?)
-            """,
-            (
-                message_type, category or "General", body, details,
-                audio_base64, audio_mime, audio_filename,
-                timestamp, timestamp,
-            ),
-        )
-        submission_id = cursor.lastrowid
-        connection.commit()
-
-        # Verify the row is readable before returning success.
-        saved = connection.execute(
-            "SELECT id FROM submissions WHERE id = ?",
-            (submission_id,),
-        ).fetchone()
-        if saved is None:
-            raise sqlite3.DatabaseError("Inserted submission was not found.")
-
-    except sqlite3.Error:
-        connection.rollback()
-        app.logger.exception("Could not save submission")
-        return json_error(
-            "Your message could not be saved. Please try again.", 500
-        )
-    finally:
-        connection.close()
-
+    """Simple deployment health check."""
     return jsonify({
-        "success": True,
-        "message": "Your message has been submitted successfully.",
-        "submission_id": submission_id,
-        "id": submission_id,
-        "type": message_type,
-        "status": "New",
-    }), 201
-
-
-# ============================================================
-# PUBLIC ADMIN REPLIES
-# ============================================================
-
-@app.route("/api/responses", methods=["GET"])
-@app.route("/api/feedback/responses", methods=["GET"])
-def get_public_responses():
-    connection = get_db()
-    try:
-        rows = connection.execute(
-            """
-            SELECT id, title, category, body, published,
-                   created_at, updated_at
-            FROM responses
-            WHERE published = 1
-            ORDER BY created_at DESC, id DESC
-            """
-        ).fetchall()
-        responses = [response_public_dict(row) for row in rows]
-    finally:
-        connection.close()
-
-    return jsonify({
-        "success": True,
-        "responses": responses,
-        "feedback": responses,
-        "data": responses,
+        "ok": True,
+        "application": "Campus Voice",
     })
 
 
@@ -534,61 +301,117 @@ def get_public_responses():
 # ADMIN LOGIN AND LOGOUT
 # ============================================================
 
-@app.route("/admin", methods=["GET", "POST"])
-@app.route("/admin/login", methods=["GET", "POST"])
 @app.route("/admin_login", methods=["GET", "POST"])
-@app.route("/admin_login.html", methods=["GET", "POST"])
 def admin_login():
-    if request.method == "GET":
-        if session.get("admin_id"):
+    if session.get("admin_id"):
+        return redirect(url_for("admin_dashboard"))
+
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+
+        # Also accept JSON login requests.
+        if request.is_json:
+            data = request.get_json(silent=True) or {}
+            username = str(data.get("username", "")).strip()
+            password = str(data.get("password", ""))
+
+        with get_db() as db:
+            admin = db.execute(
+                "SELECT * FROM admins WHERE username = ?",
+                (username,),
+            ).fetchone()
+
+        if admin and check_password_hash(
+            admin["password_hash"], password
+        ):
+            session.clear()
+            session["admin_id"] = admin["id"]
+            session["admin_username"] = admin["username"]
+            session.permanent = True
+
+            if request.is_json:
+                return jsonify({
+                    "ok": True,
+                    "redirect": url_for("admin_dashboard"),
+                })
+
             return redirect(url_for("admin_dashboard"))
+
+        if request.is_json:
+            return json_error("Invalid username or password.", 401)
+
+        flash("Invalid username or password.", "error")
+
+    # Use your existing admin login template when available.
+    if (TEMPLATE_DIR / "admin_login.html").exists():
         return render_template("admin_login.html")
 
-    data = request_data()
-    username = str(
-        data.get("username") or data.get("admin_username") or ""
-    ).strip()
-    password = str(
-        data.get("password") or data.get("admin_password") or ""
-    )
-
-    if not username or not password:
-        message = "Enter both username and password."
-        if request.is_json:
-            return json_error(message)
-        return render_template("admin_login.html", error=message), 400
-
-    connection = get_db()
-    try:
-        admin = connection.execute(
-            "SELECT * FROM admins WHERE username = ?", (username,)
-        ).fetchone()
-    finally:
-        connection.close()
-
-    if not admin or not check_password_hash(admin["password_hash"], password):
-        message = "Invalid administrator username or password."
-        if request.is_json:
-            return json_error(message, 401)
-        return render_template("admin_login.html", error=message), 401
-
-    session.clear()
-    session["admin_id"] = admin["id"]
-    session["admin_username"] = admin["username"]
-
-    if request.is_json:
-        return jsonify({
-            "success": True,
-            "message": "Login successful.",
-            "redirect": url_for("admin_dashboard"),
-        })
-    return redirect(url_for("admin_dashboard"))
+    # Fallback login page if the template has not yet been created.
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>Admin Login | Campus Voice</title>
+      <style>
+        * { box-sizing: border-box; }
+        body {
+          margin: 0; min-height: 100vh; display: grid;
+          place-items: center; padding: 20px;
+          font-family: Arial, sans-serif;
+          background: #edf5ff; color: #243447;
+        }
+        .card {
+          width: 100%; max-width: 420px; background: white;
+          padding: 30px; border-radius: 18px;
+          box-shadow: 0 15px 40px #173b5920;
+        }
+        h1 { color: #1f70c8; }
+        label { display: block; margin: 16px 0 7px; }
+        input {
+          width: 100%; padding: 12px; border-radius: 9px;
+          border: 1px solid #dce8f4;
+        }
+        button {
+          margin-top: 20px; width: 100%; padding: 13px;
+          border: 0; border-radius: 9px;
+          background: #8b5e3c; color: white;
+          font-weight: bold; cursor: pointer;
+        }
+        .error { color: #a33; }
+        a { color: #1f70c8; }
+      </style>
+    </head>
+    <body>
+      <main class="card">
+        <h1>Campus Voice</h1>
+        <p>Administrator sign in</p>
+        {% for category, message in get_flashed_messages(with_categories=true) %}
+          <p class="error">{{ message }}</p>
+        {% endfor %}
+        <form method="post">
+          <label for="username">Username</label>
+          <input id="username" name="username"
+                 autocomplete="username" required>
+          <label for="password">Password</label>
+          <input id="password" type="password" name="password"
+                 autocomplete="current-password" required>
+          <button type="submit">Login securely</button>
+        </form>
+        <p><a href="/">Return to homepage</a></p>
+      </main>
+    </body>
+    </html>
+    """)
 
 
 @app.route("/admin/logout", methods=["GET", "POST"])
 @app.route("/admin_logout", methods=["GET", "POST"])
 def admin_logout():
     session.clear()
+    flash("You have been logged out.", "success")
     return redirect(url_for("admin_login"))
 
 
@@ -596,475 +419,824 @@ def admin_logout():
 # ADMIN DASHBOARD
 # ============================================================
 
-@app.route("/admin/dashboard")
 @app.route("/admin_dashboard")
-@app.route("/admin_dashboard.html")
+@app.route("/admin/dashboard")
 @admin_required
 def admin_dashboard():
-    connection = get_db()
-    try:
-        total_submissions = connection.execute(
-            "SELECT COUNT(*) AS total FROM submissions"
-        ).fetchone()["total"]
+    """
+    Render the existing dashboard if present.
+    Otherwise show a basic working dashboard using the admin API.
+    """
+    if (TEMPLATE_DIR / "admin_dashboard.html").exists():
+        return render_template("admin_dashboard.html")
 
-        new_submissions = connection.execute(
-            """
-            SELECT COUNT(*) AS total FROM submissions
-            WHERE LOWER(status) IN ('new', 'pending')
-            """
-        ).fetchone()["total"]
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>Admin Dashboard | Campus Voice</title>
+      <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: Arial, sans-serif;
+               background: #f6f9fd; color: #243447; }
+        header { background: #173b59; color: white; padding: 18px 5%; }
+        main { max-width: 1100px; margin: auto; padding: 25px; }
+        .toolbar { display: flex; justify-content: space-between;
+                   flex-wrap: wrap; gap: 12px; align-items: center; }
+        .panel { background: white; padding: 20px; margin-top: 18px;
+                 border: 1px solid #dce8f4; border-radius: 14px; }
+        button, select, textarea, input {
+          padding: 10px; border: 1px solid #dce8f4;
+          border-radius: 8px; font: inherit;
+        }
+        button { cursor: pointer; background: #2b8ef1; color: white;
+                 border: 0; font-weight: bold; }
+        .brown { background: #8b5e3c; }
+        .danger { background: #a33; }
+        .item { border-top: 1px solid #dce8f4; padding: 18px 0; }
+        .item p { white-space: pre-wrap; overflow-wrap: anywhere; }
+        textarea { width: 100%; min-height: 90px; }
+        input[type=text] { width: 100%; }
+        small { color: #68798b; }
+        audio { width: 100%; margin: 10px 0; }
+        .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+      </style>
+    </head>
+    <body>
+      <header>
+        <div class="toolbar">
+          <div>
+            <strong>Campus Voice Administration</strong><br>
+            <small style="color:#d0dce5">
+              Signed in as {{ session.get('admin_username', 'admin') }}
+            </small>
+          </div>
+          <form method="post" action="{{ url_for('admin_logout') }}">
+            <button class="brown" type="submit">Logout</button>
+          </form>
+        </div>
+      </header>
+      <main>
+        <h1>Feedback dashboard</h1>
+        <p>Review submissions and publish official replies.</p>
+        <div class="toolbar">
+          <select id="filter">
+            <option value="">All statuses</option>
+            <option value="pending">Pending</option>
+            <option value="under_review">Under review</option>
+            <option value="approved">Approved</option>
+            <option value="rejected">Rejected</option>
+            <option value="resolved">Resolved</option>
+          </select>
+          <button onclick="loadSubmissions()">Refresh submissions</button>
+        </div>
+        <div id="summary" class="panel">Loading...</div>
+        <div id="submissions" class="panel">Loading submissions...</div>
+        <section class="panel">
+          <h2>Publish an official response</h2>
+          <form id="replyForm">
+            <label>Submission reference (optional)</label>
+            <input id="replyReference" type="text"
+                   placeholder="e.g. CV-A1B2C3D4">
+            <p><label>Response title</label></p>
+            <input id="replyTitle" type="text" required maxlength="160">
+            <p><label>Response category</label></p>
+            <input id="replyCategory" type="text"
+                   value="General announcement" maxlength="100">
+            <p><label>Official response</label></p>
+            <textarea id="replyBody" required maxlength="5000"></textarea>
+            <p>
+              <label>
+                <input id="replyPublished" type="checkbox" checked>
+                Publish this response on the homepage
+              </label>
+            </p>
+            <button type="submit">Save response</button>
+          </form>
+          <p id="replyMessage"></p>
+        </section>
+      </main>
+      <script>
+      const escapeHTML = value => String(value ?? "").replace(/[&<>"']/g, c => ({
+        "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
+      }[c]));
 
-        total_responses = connection.execute(
-            "SELECT COUNT(*) AS total FROM responses"
-        ).fetchone()["total"]
+      async function api(url, options={}) {
+        const response = await fetch(url, {
+          credentials: "same-origin",
+          ...options,
+          headers: {
+            "Accept": "application/json",
+            ...(options.headers || {})
+          }
+        });
+        const data = await response.json();
+        if (!response.ok || data.ok === false) {
+          throw new Error(data.error || "Request failed");
+        }
+        return data;
+      }
 
-        published_responses = connection.execute(
-            "SELECT COUNT(*) AS total FROM responses WHERE published = 1"
-        ).fetchone()["total"]
+      async function loadSubmissions() {
+        const target = document.getElementById("submissions");
+        target.textContent = "Loading submissions...";
+        try {
+          const data = await api("/api/admin/submissions");
+          const items = data.submissions || [];
+          document.getElementById("summary").textContent =
+            "Total submissions: " + items.length +
+            " | Pending: " + items.filter(x => x.status === "pending").length +
+            " | Resolved: " + items.filter(x => x.status === "resolved").length;
 
-        recent_submissions = [
-            dict(row) for row in connection.execute(
-                """
-                SELECT id, message_type, category, body, details,
-                       audio_mime, audio_filename, status, review_note,
-                       created_at, updated_at,
-                       CASE WHEN audio_base64 IS NOT NULL
-                            AND audio_base64 != ''
-                            THEN 1 ELSE 0 END AS has_audio
-                FROM submissions
-                ORDER BY created_at DESC, id DESC
-                LIMIT 10
-                """
-            ).fetchall()
-        ]
-    finally:
-        connection.close()
+          const filter = document.getElementById("filter").value;
+          const visible = items.filter(x => !filter || x.status === filter);
 
-    return render_template(
-        "admin_dashboard.html",
-        admin_username=session.get("admin_username", "Administrator"),
-        total_submissions=total_submissions,
-        new_submissions=new_submissions,
-        total_responses=total_responses,
-        published_responses=published_responses,
-        recent_submissions=recent_submissions,
-    )
+          if (!visible.length) {
+            target.textContent = "No submissions found.";
+            return;
+          }
+
+          target.replaceChildren();
+          visible.forEach(item => {
+            const article = document.createElement("article");
+            article.className = "item";
+
+            const title = document.createElement("h3");
+            title.textContent = item.category + " — " + item.reference;
+
+            const meta = document.createElement("small");
+            meta.textContent = "Type: " + item.submission_type +
+              " | Status: " + item.status + " | Received: " + item.created_at;
+
+            const body = document.createElement("p");
+            body.textContent = item.body || "(Voice-note submission)";
+
+            const details = document.createElement("p");
+            details.textContent = item.details ? "Context: " + item.details : "";
+
+            article.append(title, meta, body, details);
+
+            if (item.has_audio) {
+              const audio = document.createElement("audio");
+              audio.controls = true;
+              audio.preload = "none";
+              audio.src = "/admin/audio/" + encodeURIComponent(item.reference);
+              article.appendChild(audio);
+            }
+
+            const status = document.createElement("select");
+            ["pending", "under_review", "approved", "rejected", "resolved"]
+              .forEach(value => {
+                const option = document.createElement("option");
+                option.value = value;
+                option.textContent = value.replace("_", " ");
+                option.selected = item.status === value;
+                status.appendChild(option);
+              });
+
+            const note = document.createElement("textarea");
+            note.placeholder = "Private administrator note";
+            note.value = item.admin_note || "";
+            note.maxLength = 3000;
+
+            const actions = document.createElement("div");
+            actions.className = "actions";
+
+            const save = document.createElement("button");
+            save.textContent = "Save review";
+            save.onclick = async () => {
+              try {
+                await api("/api/admin/submissions/" +
+                  encodeURIComponent(item.reference), {
+                    method: "PATCH",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({
+                      status: status.value,
+                      admin_note: note.value
+                    })
+                  });
+                alert("Submission updated.");
+                loadSubmissions();
+              } catch (error) {
+                alert(error.message);
+              }
+            };
+
+            const reply = document.createElement("button");
+            reply.className = "brown";
+            reply.textContent = "Reply to this submission";
+            reply.onclick = () => {
+              document.getElementById("replyReference").value = item.reference;
+              document.getElementById("replyCategory").value = item.category;
+              document.getElementById("replyTitle").focus();
+              document.getElementById("replyForm").scrollIntoView({
+                behavior: "smooth"
+              });
+            };
+
+            actions.append(save, reply);
+            article.append(status, document.createElement("br"), note, actions);
+            target.appendChild(article);
+          });
+        } catch (error) {
+          target.textContent = "Could not load submissions: " + error.message;
+        }
+      }
+
+      document.getElementById("filter").addEventListener("change", loadSubmissions);
+
+      document.getElementById("replyForm").addEventListener("submit", async event => {
+        event.preventDefault();
+        const message = document.getElementById("replyMessage");
+        message.textContent = "Saving...";
+        try {
+          await api("/api/admin/responses", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+              reference: document.getElementById("replyReference").value.trim(),
+              title: document.getElementById("replyTitle").value.trim(),
+              category: document.getElementById("replyCategory").value.trim(),
+              body: document.getElementById("replyBody").value.trim(),
+              published: document.getElementById("replyPublished").checked
+            })
+          });
+          message.textContent = "Official response saved.";
+          document.getElementById("replyForm").reset();
+          document.getElementById("replyCategory").value = "General announcement";
+          document.getElementById("replyPublished").checked = true;
+        } catch (error) {
+          message.textContent = error.message;
+        }
+      });
+
+      loadSubmissions();
+      setInterval(() => {
+        if (!document.hidden) loadSubmissions();
+      }, 15000);
+      </script>
+    </body>
+    </html>
+    """)
 
 
 # ============================================================
-# ADMIN SUBMISSION MANAGEMENT
+# PUBLIC SUBMISSION API
+# Compatible with the supplied index.html
+# ============================================================
+
+@app.route("/api/submissions", methods=["POST"])
+def create_submission():
+    """
+    Accept multipart/form-data fields:
+      category, category_id, type, body, message, details, audio
+    """
+    category = (
+        request.form.get("category", "").strip()
+        or request.form.get("category_id", "").strip()
+    )
+
+    submission_type = request.form.get("type", "Text").strip()
+    body = (
+        request.form.get("body", "").strip()
+        or request.form.get("message", "").strip()
+    )
+    details = request.form.get("details", "").strip()
+
+    if category not in ALLOWED_CATEGORIES:
+        return json_error("Please select a valid message category.")
+
+    if len(body) > 3000:
+        return json_error("Your message must not exceed 3000 characters.")
+
+    if len(details) > 160:
+        return json_error("Optional context must not exceed 160 characters.")
+
+    audio_file = request.files.get("audio")
+
+    if submission_type.lower() in {"voice", "voice note", "audio"}:
+        if not audio_file or not audio_file.filename:
+            return json_error("Please record or upload a voice note.")
+
+        if not valid_audio_file(audio_file):
+            return json_error(
+                "Unsupported audio format. Choose a supported audio file."
+            )
+
+        submission_type = "Voice note"
+        body = ""
+    else:
+        submission_type = "Text"
+
+        if not body:
+            return json_error("Please enter your message.")
+
+        if audio_file and audio_file.filename:
+            return json_error(
+                "Please submit either text or a voice note, not both."
+            )
+
+    # Create a private filename independent of the original upload name.
+    audio_filename = None
+    reference = new_reference()
+    saved_path = None
+
+    if audio_file and audio_file.filename:
+        extension = Path(
+            secure_filename(audio_file.filename)
+        ).suffix.lower()
+
+        audio_filename = f"{uuid4().hex}{extension}"
+        saved_path = UPLOAD_DIR / audio_filename
+
+        try:
+            audio_file.save(saved_path)
+
+            if saved_path.stat().st_size == 0:
+                saved_path.unlink(missing_ok=True)
+                return json_error("The uploaded audio file is empty.")
+
+            if saved_path.stat().st_size > 10 * 1024 * 1024:
+                saved_path.unlink(missing_ok=True)
+                return json_error("Audio files must not exceed 10 MB.")
+
+        except Exception:
+            logger.exception("Audio upload failed")
+            if saved_path:
+                saved_path.unlink(missing_ok=True)
+            return json_error("Could not save your audio file.", 500)
+
+    timestamp = utc_now()
+
+    try:
+        with get_db() as db:
+            cursor = db.execute(
+                """
+                INSERT INTO submissions (
+                    reference, category, submission_type,
+                    body, details, audio_filename,
+                    status, admin_note, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'pending', '', ?, ?)
+                """,
+                (
+                    reference,
+                    category,
+                    submission_type,
+                    body,
+                    details,
+                    audio_filename,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+
+            submission_id = cursor.lastrowid
+
+    except Exception:
+        logger.exception("Could not save submission")
+
+        if saved_path:
+            saved_path.unlink(missing_ok=True)
+
+        return json_error("The submission could not be saved.", 500)
+
+    logger.info("New submission received: %s", reference)
+
+    return jsonify({
+        "ok": True,
+        "success": True,
+        "reference": reference,
+        "message": "Your anonymous submission has been received.",
+    }), 201
+
+
+# ============================================================
+# PUBLIC OFFICIAL RESPONSES API
+# Only published responses are visible on the homepage.
+# ============================================================
+
+@app.route("/api/responses", methods=["GET"])
+def public_responses():
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT
+                r.id,
+                r.title,
+                r.body,
+                r.category,
+                r.created_at,
+                r.published_at,
+                r.published,
+                s.reference
+            FROM responses r
+            LEFT JOIN submissions s ON s.id = r.submission_id
+            WHERE r.published = 1
+            ORDER BY COALESCE(r.published_at, r.created_at) DESC, r.id DESC
+            LIMIT 100
+            """
+        ).fetchall()
+
+    responses = []
+
+    for row in rows:
+        responses.append({
+            "id": row["id"],
+            "title": row["title"],
+            "body": row["body"],
+            "response": row["body"],
+            "category": row["category"],
+            "date": row["published_at"] or row["created_at"],
+            "created_at": row["created_at"],
+            "published_at": row["published_at"],
+            "published": True,
+            "is_published": True,
+        })
+
+    return jsonify({
+        "ok": True,
+        "responses": responses,
+    })
+
+
+# ============================================================
+# ADMIN SUBMISSIONS API
 # ============================================================
 
 @app.route("/api/admin/submissions", methods=["GET"])
 @admin_required
-def admin_get_submissions():
-    status_filter = request.args.get("status", "").strip()
-    category_filter = request.args.get("category", "").strip()
-    search_term = request.args.get("search", "").strip()
+def admin_list_submissions():
+    status = request.args.get("status", "").strip()
 
-    query = """
-        SELECT id, message_type, category, body, details,
-               audio_base64, audio_mime, audio_filename,
-               status, review_note, created_at, updated_at
-        FROM submissions WHERE 1 = 1
-    """
-    parameters: list[Any] = []
-
-    if status_filter:
-        query += " AND LOWER(status) = LOWER(?)"
-        parameters.append(status_filter)
-
-    if category_filter:
-        query += " AND category = ?"
-        parameters.append(category_filter)
-
-    if search_term:
-        query += """
-            AND (body LIKE ? OR details LIKE ? OR category LIKE ?
-                 OR CAST(id AS TEXT) LIKE ?)
-        """
-        pattern = f"%{search_term}%"
-        parameters.extend([pattern] * 4)
-
-    query += " ORDER BY created_at DESC, id DESC"
-
-    connection = get_db()
-    try:
-        rows = connection.execute(query, parameters).fetchall()
-        submissions = [submission_public_dict(row) for row in rows]
-    finally:
-        connection.close()
+    with get_db() as db:
+        if status and status in ALLOWED_STATUSES:
+            rows = db.execute(
+                """
+                SELECT * FROM submissions
+                WHERE status = ?
+                ORDER BY created_at DESC, id DESC
+                """,
+                (status,),
+            ).fetchall()
+        else:
+            rows = db.execute(
+                """
+                SELECT * FROM submissions
+                ORDER BY created_at DESC, id DESC
+                """
+            ).fetchall()
 
     return jsonify({
-        "success": True,
-        "submissions": submissions,
-        "messages": submissions,
-        "data": submissions,
-        "count": len(submissions),
+        "ok": True,
+        "submissions": [submission_to_dict(row) for row in rows],
     })
 
 
-@app.route("/api/admin/submissions/<int:submission_id>", methods=["GET"])
+@app.route("/api/admin/submissions/<reference>", methods=["PATCH"])
 @admin_required
-def admin_get_submission(submission_id: int):
-    connection = get_db()
-    try:
-        row = connection.execute(
-            """
-            SELECT id, message_type, category, body, details,
-                   audio_base64, audio_mime, audio_filename,
-                   status, review_note, created_at, updated_at
-            FROM submissions WHERE id = ?
-            """,
-            (submission_id,),
-        ).fetchone()
-    finally:
-        connection.close()
+def update_submission(reference):
+    data = request.get_json(silent=True) or {}
 
-    if row is None:
+    status = data.get("status")
+    admin_note = data.get("admin_note")
+
+    if status is None and admin_note is None:
+        return json_error("Provide a status or administrator note.")
+
+    if status is not None and status not in ALLOWED_STATUSES:
+        return json_error("Invalid submission status.")
+
+    if admin_note is not None:
+        admin_note = str(admin_note).strip()
+
+        if len(admin_note) > 3000:
+            return json_error("Administrator note is too long.")
+
+    row = get_admin_submission(reference)
+
+    if not row:
         return json_error("Submission not found.", 404)
 
-    item = submission_public_dict(row)
-    return jsonify({"success": True, "submission": item, "data": item})
+    updates = []
+    values = []
 
+    if status is not None:
+        updates.append("status = ?")
+        values.append(status)
 
-@app.route(
-    "/api/admin/submissions/<int:submission_id>/audio",
-    methods=["GET"],
-)
-@admin_required
-def admin_get_submission_audio(submission_id: int):
-    connection = get_db()
-    try:
-        row = connection.execute(
-            """
-            SELECT audio_base64, audio_mime, audio_filename
-            FROM submissions WHERE id = ?
+    if admin_note is not None:
+        updates.append("admin_note = ?")
+        values.append(admin_note)
+
+    updates.append("updated_at = ?")
+    values.append(utc_now())
+    values.append(reference)
+
+    with get_db() as db:
+        db.execute(
+            f"""
+            UPDATE submissions
+            SET {", ".join(updates)}
+            WHERE reference = ?
             """,
-            (submission_id,),
-        ).fetchone()
-    finally:
-        connection.close()
+            values,
+        )
 
-    if row is None:
-        return json_error("Submission not found.", 404)
-    if not row["audio_base64"]:
-        return json_error("This submission does not contain a voice note.", 404)
-
-    mime_type = row["audio_mime"] or "audio/webm"
-    data_url = f"data:{mime_type};base64,{row['audio_base64']}"
-
-    return jsonify({
-        "success": True,
-        "audio": data_url,
-        "audio_url": data_url,
-        "mime_type": mime_type,
-        "filename": row["audio_filename"] or "voice-note",
-    })
-
-
-@app.route(
-    "/api/admin/submissions/<int:submission_id>",
-    methods=["PATCH", "PUT"],
-)
-@app.route(
-    "/api/admin/submissions/<int:submission_id>/review",
-    methods=["PATCH", "POST"],
-)
-@app.route(
-    "/api/admin/submissions/<int:submission_id>/status",
-    methods=["PATCH", "POST"],
-)
-@admin_required
-def admin_update_submission(submission_id: int):
-    data = request_data()
-    status_value = data.get("status")
-    review_note = data.get("review_note", data.get("reviewNote"))
-
-    connection = get_db()
-    try:
-        existing = connection.execute(
-            "SELECT * FROM submissions WHERE id = ?", (submission_id,)
+        updated = db.execute(
+            "SELECT * FROM submissions WHERE reference = ?",
+            (reference,),
         ).fetchone()
 
-        if existing is None:
-            return json_error("Submission not found.", 404)
-
-        new_status = (
-            normalise_status(str(status_value))
-            if status_value is not None else existing["status"]
-        )
-        new_review_note = (
-            str(review_note).strip()[:5000]
-            if review_note is not None else existing["review_note"]
-        )
-
-        connection.execute(
-            """
-            UPDATE submissions SET status = ?, review_note = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (new_status, new_review_note, utc_now(), submission_id),
-        )
-        connection.commit()
-    except sqlite3.Error:
-        connection.rollback()
-        app.logger.exception("Could not update submission")
-        return json_error("Could not update the submission.", 500)
-    finally:
-        connection.close()
-
     return jsonify({
-        "success": True,
-        "message": "Submission updated successfully.",
-        "id": submission_id,
-        "status": new_status,
-        "review_note": new_review_note,
+        "ok": True,
+        "message": "Submission updated.",
+        "submission": submission_to_dict(updated),
     })
 
 
 # ============================================================
-# ADMIN RESPONSE / FEEDBACK MANAGEMENT
+# ADMIN PRIVATE AUDIO ACCESS
+# Audio files are never exposed through /static.
+# ============================================================
+
+@app.route("/admin/audio/<reference>", methods=["GET"])
+@admin_required
+def admin_audio(reference):
+    row = get_admin_submission(reference)
+
+    if not row or not row["audio_filename"]:
+        abort(404)
+
+    filename = row["audio_filename"]
+
+    # Prevent path traversal and only serve files from private storage.
+    if Path(filename).name != filename:
+        abort(404)
+
+    file_path = UPLOAD_DIR / filename
+
+    if not file_path.is_file():
+        abort(404)
+
+    return send_from_directory(
+        str(UPLOAD_DIR),
+        filename,
+        as_attachment=False,
+        conditional=True,
+        max_age=0,
+    )
+
+
+# ============================================================
+# ADMIN OFFICIAL RESPONSE MANAGEMENT
 # ============================================================
 
 @app.route("/api/admin/responses", methods=["GET"])
 @admin_required
-def admin_get_responses():
-    connection = get_db()
-    try:
-        rows = connection.execute(
+def admin_list_responses():
+    with get_db() as db:
+        rows = db.execute(
             """
-            SELECT id, title, category, body, published,
-                   created_at, updated_at, admin_id
-            FROM responses ORDER BY created_at DESC, id DESC
+            SELECT r.*, s.reference
+            FROM responses r
+            LEFT JOIN submissions s ON s.id = r.submission_id
+            ORDER BY r.created_at DESC, r.id DESC
             """
         ).fetchall()
-        responses = [response_public_dict(row) for row in rows]
-    finally:
-        connection.close()
 
     return jsonify({
-        "success": True,
-        "responses": responses,
-        "feedback": responses,
-        "data": responses,
+        "ok": True,
+        "responses": [dict(row) for row in rows],
     })
 
 
 @app.route("/api/admin/responses", methods=["POST"])
 @admin_required
-def admin_create_response():
-    data = request_data()
-    title = str(data.get("title") or "Campus Voice Feedback").strip()[:200]
-    category = str(data.get("category") or "General").strip()[:100]
-    body = str(
-        data.get("body") or data.get("message")
-        or data.get("response") or ""
-    ).strip()
+def create_response():
+    data = request.get_json(silent=True) or {}
+
+    reference = str(data.get("reference", "")).strip()
+    title = str(data.get("title", "")).strip()
+    body = str(data.get("body", data.get("response", ""))).strip()
+    category = str(data.get("category", "General announcement")).strip()
+    published = data.get("published", False)
+
+    if not title:
+        return json_error("Response title is required.")
 
     if not body:
-        return json_error("Please enter the feedback or response message.")
-    if len(body) > 20000:
-        return json_error("The response is too long.")
+        return json_error("Response body is required.")
 
-    published_value = data.get(
-        "published", data.get("is_published", True)
-    )
-    if isinstance(published_value, str):
-        published = published_value.strip().lower() in {
-            "1", "true", "yes", "on", "published"
-        }
-    else:
-        published = bool(published_value)
+    if len(title) > 160 or len(body) > 5000:
+        return json_error("The title or response exceeds the allowed length.")
+
+    if len(category) > 100:
+        return json_error("Response category is too long.")
+
+    if not isinstance(published, bool):
+        return json_error("Published must be true or false.")
+
+    submission_id = None
+
+    if reference:
+        submission = get_admin_submission(reference)
+
+        if not submission:
+            return json_error("The specified submission was not found.", 404)
+
+        submission_id = submission["id"]
 
     timestamp = utc_now()
-    connection = get_db()
-    try:
-        cursor = connection.execute(
+    published_at = timestamp if published else None
+
+    with get_db() as db:
+        cursor = db.execute(
             """
             INSERT INTO responses (
-                title, category, body, published,
-                created_at, updated_at, admin_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                submission_id, title, body, category,
+                published, created_at, published_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                title or "Campus Voice Feedback",
-                category or "General",
+                submission_id,
+                title,
                 body,
+                category or "General announcement",
                 int(published),
                 timestamp,
-                timestamp,
-                session.get("admin_id"),
+                published_at,
             ),
         )
+
         response_id = cursor.lastrowid
-        connection.commit()
-    except sqlite3.Error:
-        connection.rollback()
-        app.logger.exception("Could not save admin response")
-        return json_error("Could not save the response.", 500)
-    finally:
-        connection.close()
+
+        # A response marked as published can also mark the submission resolved.
+        if submission_id is not None and published:
+            db.execute(
+                """
+                UPDATE submissions
+                SET status = 'resolved', updated_at = ?
+                WHERE id = ?
+                """,
+                (timestamp, submission_id),
+            )
 
     return jsonify({
-        "success": True,
-        "message": "Feedback response saved successfully.",
+        "ok": True,
+        "message": "Official response saved.",
         "id": response_id,
-        "response_id": response_id,
         "published": published,
     }), 201
 
 
-@app.route(
-    "/api/admin/responses/<int:response_id>",
-    methods=["PATCH", "PUT"],
-)
-@app.route(
-    "/api/admin/responses/<int:response_id>/publish",
-    methods=["PATCH", "POST"],
-)
+@app.route("/api/admin/responses/<int:response_id>", methods=["PATCH"])
 @admin_required
-def admin_update_response(response_id: int):
-    data = request_data()
-    connection = get_db()
-    try:
-        existing = connection.execute(
-            "SELECT * FROM responses WHERE id = ?", (response_id,)
+def update_response(response_id):
+    data = request.get_json(silent=True) or {}
+
+    with get_db() as db:
+        row = db.execute(
+            "SELECT * FROM responses WHERE id = ?",
+            (response_id,),
         ).fetchone()
 
-        if existing is None:
+        if not row:
             return json_error("Response not found.", 404)
 
-        title = str(data.get("title", existing["title"])).strip()[:200]
-        category = str(data.get("category", existing["category"])).strip()[:100]
-        body = str(data.get("body", existing["body"])).strip()
+        updates = []
+        values = []
 
-        published = int(existing["published"])
-        if "published" in data or "is_published" in data:
-            value = data.get("published", data.get("is_published"))
-            if isinstance(value, str):
-                published = int(value.strip().lower() in {
-                    "1", "true", "yes", "on", "published"
-                })
-            else:
-                published = int(bool(value))
+        if "title" in data:
+            title = str(data["title"]).strip()
 
-        if not body:
-            return json_error("The response message cannot be empty.")
-        if len(body) > 20000:
-            return json_error("The response is too long.")
+            if not title or len(title) > 160:
+                return json_error("Enter a valid response title.")
 
-        connection.execute(
-            """
-            UPDATE responses
-            SET title = ?, category = ?, body = ?,
-                published = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                title or "Campus Voice Feedback",
-                category or "General",
-                body,
-                published,
-                utc_now(),
-                response_id,
-            ),
+            updates.append("title = ?")
+            values.append(title)
+
+        if "body" in data or "response" in data:
+            body = str(data.get("body", data.get("response", ""))).strip()
+
+            if not body or len(body) > 5000:
+                return json_error("Enter a valid response body.")
+
+            updates.append("body = ?")
+            values.append(body)
+
+        if "category" in data:
+            category = str(data["category"]).strip()
+
+            if len(category) > 100:
+                return json_error("Response category is too long.")
+
+            updates.append("category = ?")
+            values.append(category or "General announcement")
+
+        if "published" in data:
+            published = data["published"]
+
+            if not isinstance(published, bool):
+                return json_error("Published must be true or false.")
+
+            updates.append("published = ?")
+            values.append(int(published))
+
+            updates.append("published_at = ?")
+            values.append(utc_now() if published else None)
+
+        if not updates:
+            return json_error("No changes were provided.")
+
+        values.append(response_id)
+
+        db.execute(
+            f"UPDATE responses SET {', '.join(updates)} WHERE id = ?",
+            values,
         )
-        connection.commit()
-    except sqlite3.Error:
-        connection.rollback()
-        app.logger.exception("Could not update response")
-        return json_error("Could not update the response.", 500)
-    finally:
-        connection.close()
+
+        updated = db.execute(
+            "SELECT * FROM responses WHERE id = ?",
+            (response_id,),
+        ).fetchone()
 
     return jsonify({
-        "success": True,
-        "message": "Response updated successfully.",
-        "id": response_id,
-        "published": bool(published),
+        "ok": True,
+        "message": "Response updated.",
+        "response": dict(updated),
     })
 
 
-@app.route(
-    "/api/admin/responses/<int:response_id>",
-    methods=["DELETE"],
-)
+@app.route("/api/admin/responses/<int:response_id>", methods=["DELETE"])
 @admin_required
-def admin_delete_response(response_id: int):
-    connection = get_db()
-    try:
-        cursor = connection.execute(
-            "DELETE FROM responses WHERE id = ?", (response_id,)
+def delete_response(response_id):
+    with get_db() as db:
+        cursor = db.execute(
+            "DELETE FROM responses WHERE id = ?",
+            (response_id,),
         )
-        connection.commit()
+
         if cursor.rowcount == 0:
             return json_error("Response not found.", 404)
-    except sqlite3.Error:
-        connection.rollback()
-        app.logger.exception("Could not delete response")
-        return json_error("Could not delete the response.", 500)
-    finally:
-        connection.close()
 
     return jsonify({
-        "success": True,
-        "message": "Response deleted successfully.",
-        "id": response_id,
+        "ok": True,
+        "message": "Response deleted.",
     })
 
 
 # ============================================================
-# FLASK COMMANDS
+# BASIC SECURITY HEADERS AND ERROR HANDLING
 # ============================================================
 
-@app.cli.command("init-db")
-def init_db_command():
-    init_db()
-    print(f"Campus Voice database initialised: {DATABASE_PATH}")
+@app.after_request
+def security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Cache-Control"] = "no-store"
 
-
-@app.cli.command("create-admin")
-def create_admin_command():
-    init_db()
-    ensure_default_admin()
-    print("Administrator setup checked.")
-
-
-# ============================================================
-# ERROR HANDLERS
-# ============================================================
-
-@app.errorhandler(404)
-def page_not_found(error):
-    if request.path.startswith("/api/"):
-        return json_error("The requested API endpoint was not found.", 404)
-    return "Page not found.", 404
+    return response
 
 
 @app.errorhandler(413)
-def request_too_large(error):
-    message = "The uploaded file is too large. Maximum request size is 12 MB."
+def file_too_large(_error):
     if request.path.startswith("/api/"):
-        return json_error(message, 413)
-    return message, 413
+        return json_error("Upload exceeds the 10 MB limit.", 413)
+
+    return "Upload exceeds the 10 MB limit.", 413
+
+
+@app.errorhandler(404)
+def not_found(_error):
+    if request.path.startswith("/api/"):
+        return json_error("The requested resource was not found.", 404)
+
+    return "Page not found.", 404
 
 
 @app.errorhandler(500)
-def internal_server_error(error):
-    app.logger.error("Unexpected server error: %s", error)
+def internal_error(error):
+    logger.error("Application error: %s", error)
+
     if request.path.startswith("/api/"):
         return json_error("An internal server error occurred.", 500)
-    return "An internal server error occurred. Please try again later.", 500
+
+    return "An internal server error occurred.", 500
 
 
 # ============================================================
-# LOCAL DEVELOPMENT ENTRY POINT
+# RUN LOCALLY
 # ============================================================
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
-    debug_mode = os.environ.get("FLASK_DEBUG", "0").lower() in {
-        "1", "true", "yes"
-    }
-    app.run(host="0.0.0.0", port=port, debug=debug_mode)
+    # Debug mode should only be enabled during local development.
+    app.run(
+        host="127.0.0.1",
+        port=int(os.environ.get("PORT", "5000")),
+        debug=os.environ.get("FLASK_DEBUG", "").lower() == "true",
+    )
