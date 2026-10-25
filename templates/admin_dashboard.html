@@ -1,0 +1,574 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#2b8ef1">
+<title>Admin Dashboard | Campus Voice</title>
+<style>
+:root {
+  --blue:#2b8ef1;--brown:#8b5e3c;--white:#fff;
+  --bg:#f5f8fc;--ink:#26394b;--muted:#64778a;
+  --line:#dce7f2;--pale:#eaf4ff;
+  --shadow:0 8px 25px rgba(43,142,241,.10);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 Inter,system-ui,-apple-system,"Segoe UI",sans-serif}
+button,input,select,textarea{font:inherit}
+button{cursor:pointer}
+a{text-decoration:none;color:inherit}
+.layout{min-height:100vh;display:grid;grid-template-columns:245px minmax(0,1fr)}
+.sidebar{background:var(--brown);color:#fff;padding:23px 16px;display:flex;flex-direction:column;gap:26px}
+.brand{display:flex;gap:11px;align-items:center;padding:0 7px;font-weight:850;font-size:15px}
+.mark,.avatar{display:grid;place-items:center;background:var(--blue);color:#fff;font-weight:900}
+.mark{width:42px;height:42px;border-radius:13px}
+.brand small{display:block;font-size:11px;font-weight:500;margin-top:3px}
+.nav-label{padding:0 12px;color:#f3e9e1;font-size:10px;font-weight:850;letter-spacing:.13em;text-transform:uppercase;margin-bottom:8px}
+.side-nav{display:grid;gap:5px}
+.side-nav a,.side-nav button{width:100%;display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:10px;background:transparent;border:1px solid transparent;color:#fff;text-align:left;font-weight:650}
+.side-nav a:hover,.side-nav button:hover,.side-nav .active{background:var(--blue);color:#fff}
+.navicon{width:20px;text-align:center;font-size:16px}
+.side-bottom{margin-top:auto;padding:14px;border-radius:14px;background:#744a30;border:1px solid #c5a48e;color:#fff;font-size:12px}
+.side-bottom strong{display:block;margin-bottom:5px}
+.main{min-width:0}
+.topbar{min-height:76px;padding:14px 30px;background:#fff;border-bottom:2px solid var(--blue);display:flex;align-items:center;justify-content:space-between;gap:15px}
+.topbar-title{font-weight:850;font-size:16px;color:var(--brown)}
+.topbar-title small{display:block;font-size:11px;font-weight:500;color:var(--muted);margin-top:2px}
+.top-actions{display:flex;align-items:center;gap:12px}
+.secure{color:var(--blue);font-size:12px;font-weight:800}
+.avatar{width:38px;height:38px;border-radius:12px}
+.content{max-width:1450px;margin:auto;padding:29px 30px 42px}
+.welcome{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:24px}
+.welcome h1{font-size:27px;letter-spacing:-.04em;line-height:1.2;color:var(--brown);margin:0 0 7px}
+.welcome p{color:var(--muted);margin:0}
+.btn{border:1px solid transparent;border-radius:10px;padding:10px 14px;font-weight:800;display:inline-flex;align-items:center;justify-content:center;gap:7px}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.btn-primary,.btn-success{background:var(--blue);color:#fff}
+.btn-primary:hover,.btn-success:hover{background:#176fc7}
+.btn-light{background:#fff;border:1px solid var(--line);color:var(--brown)}
+.btn-light:hover{background:var(--pale);border-color:var(--blue)}
+.btn-danger{background:var(--brown);color:#fff}
+.btn-small{padding:7px 10px;font-size:12px}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px;margin-bottom:22px}
+.stat,.panel{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow)}
+.stat{padding:19px}
+.stat-head{display:flex;justify-content:space-between;align-items:center;gap:10px;color:var(--muted);font-size:12px;font-weight:750}
+.stat-icon{width:35px;height:35px;border-radius:11px;display:grid;place-items:center;background:var(--pale);color:var(--blue);font-size:16px}
+.stat strong{display:block;color:var(--brown);font-size:29px;letter-spacing:-.04em;margin-top:11px}
+.stat small{display:block;color:var(--muted);font-size:11px;margin-top:3px}
+.panel{overflow:hidden}
+.panel-head{padding:19px 21px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:15px;flex-wrap:wrap}
+.panel-head h2{font-size:16px;color:var(--brown);margin:0}
+.panel-head p{color:var(--muted);font-size:12px;margin:4px 0 0}
+.tabs{display:flex;gap:6px;flex-wrap:wrap}
+.tab{border:1px solid var(--line);background:#fff;border-radius:9px;padding:8px 11px;color:var(--brown);font-weight:750;font-size:12px}
+.tab.active{background:var(--blue);border-color:var(--blue);color:#fff}
+.filters{padding:15px 21px;display:flex;gap:10px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+.filters input,.filters select,.field input,.field select,.field textarea{width:100%;border:1px solid #cbd9e7;border-radius:9px;padding:10px 12px;background:#fff;color:var(--ink);outline:none}
+.filters input{flex:1;min-width:180px}
+.filters select{width:auto;min-width:150px}
+input:focus,select:focus,textarea:focus{border-color:var(--blue)!important;box-shadow:0 0 0 3px #2b8ef119}
+.table-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:850px}
+th{text-align:left;padding:12px 18px;background:#f1f6fc;color:var(--brown);font-size:10px;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap}
+td{padding:15px 18px;border-top:1px solid var(--line);vertical-align:top;color:var(--ink)}
+tbody tr:hover{background:#f8fbff}
+.subject{font-weight:800;color:var(--brown);max-width:320px}
+.subtext{color:var(--muted);font-size:11px;margin-top:4px}
+.badge{display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:5px 8px;font-size:10px;font-weight:850;white-space:nowrap;border:1px solid var(--line)}
+.pending{background:#fff7e8;color:#8a5b16;border-color:#eed6a6}
+.approved,.published{background:#eaf4ff;color:#176fc7;border-color:#b7d8fb}
+.rejected{background:#f5ede7;color:var(--brown);border-color:#d9bda5}
+.type{background:#f4f7fb;color:#516579}
+.actions-cell{display:flex;gap:6px;flex-wrap:wrap}
+.empty{padding:36px 20px;text-align:center;color:var(--muted)}
+.empty strong{display:block;color:var(--brown);font-size:15px;margin-bottom:5px}
+.lower-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:20px}
+.publish-form{padding:20px}
+.field{display:grid;gap:7px;margin-bottom:15px}
+.field label{font-size:12px;font-weight:800;color:var(--brown)}
+.field textarea{min-height:105px;resize:vertical}
+.field small{color:var(--muted);font-size:11px}
+.publish-list{padding:0 20px 18px}
+.published-item{padding:13px 0;border-bottom:1px solid var(--line)}
+.published-item:last-child{border-bottom:0}
+.published-item strong{display:block;color:var(--brown);margin-bottom:4px}
+.published-item p{margin:0;color:var(--ink);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}
+.item-meta{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-top:7px;color:var(--muted);font-size:10px}
+.notice{margin-top:20px;padding:14px 16px;border-radius:12px;background:#fff;border:1px solid #d9bda5;color:var(--brown);font-size:12px}
+.modal-backdrop{display:none;position:fixed;inset:0;background:#26394bcc;z-index:10;padding:20px;overflow:auto;align-items:center;justify-content:center}
+.modal-backdrop.show{display:flex}
+.modal{width:min(680px,100%);max-height:90vh;overflow:auto;background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow)}
+.modal-head{padding:19px 22px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}
+.modal-head h2{font-size:17px;color:var(--brown);margin:0}
+.xbtn{border:1px solid var(--line);background:#fff;color:var(--brown);border-radius:9px;width:34px;height:34px;font-size:18px}
+.modal-body{padding:22px;color:var(--ink)}
+.message-body{white-space:pre-wrap;overflow-wrap:anywhere;background:#f7faff;border:1px solid var(--line);border-radius:12px;padding:15px;margin:12px 0}
+.modal-body audio{width:100%;margin:10px 0}
+.modal-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:18px}
+.toast{position:fixed;right:22px;bottom:22px;background:#173b59;color:#fff;padding:13px 17px;border-radius:12px;box-shadow:var(--shadow);display:none;z-index:20;max-width:380px}
+.toast.show{display:block}
+.footnote{font-size:11px;color:var(--muted);padding:13px 21px;border-top:1px solid var(--line)}
+input[type=checkbox]{accent-color:var(--blue)}
+@media(max-width:1050px){.layout{grid-template-columns:205px minmax(0,1fr)}.stats{grid-template-columns:repeat(2,1fr)}.content{padding:24px 20px}.topbar{padding:14px 20px}.lower-grid{grid-template-columns:1fr}}
+@media(max-width:700px){.layout{grid-template-columns:1fr}.sidebar{padding:12px 14px;gap:12px}.sidebar .nav-label,.side-bottom{display:none}.side-nav{display:flex;overflow-x:auto;gap:5px}.side-nav a,.side-nav button{white-space:nowrap;width:auto;padding:9px 10px;font-size:12px}.navicon{width:auto}.topbar{min-height:65px;padding:12px 16px}.content{padding:21px 14px}.welcome{display:block}.welcome .btn{margin-top:15px}.welcome h1{font-size:24px}.stats{gap:10px}.stat{padding:14px}.stat strong{font-size:25px}.panel-head{padding:15px}.filters{padding:12px 15px}.filters input,.filters select{width:100%;min-width:0}.panel-head .tabs{width:100%}.tab{flex:1}.publish-form{padding:15px}.secure{display:none}}
+@media(max-width:420px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.stat-head{font-size:11px}.topbar-title{font-size:14px}.modal-backdrop{padding:10px}.modal-body{padding:15px}}
+</style>
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <a class="brand" href="#dashboard"><span class="mark">CV</span><span>Campus Voice<small>Meru National Polytechnic</small></span></a>
+  <div>
+    <div class="nav-label">Workspace</div>
+    <div class="side-nav">
+      <a class="active" href="#dashboard"><span class="navicon">▦</span>Overview</a>
+      <a href="#inbox"><span class="navicon">✉</span>Message inbox</a>
+      <a href="#publish"><span class="navicon">◉</span>Public responses</a>
+      <button type="button" id="exportBtn"><span class="navicon">⇩</span>Export data</button>
+    </div>
+  </div>
+  <div>
+    <div class="nav-label">Quick filters</div>
+    <div class="side-nav">
+      <button type="button" data-quick="Pending">◷ Pending review</button>
+      <button type="button" data-quick="Approved">✓ Approved</button>
+      <button type="button" data-quick="Rejected">⊘ Rejected</button>
+    </div>
+  </div>
+  <div class="side-bottom"><strong>Secure admin workspace</strong>Submissions are loaded from the application server. Student records are not read from browser storage.</div>
+</aside>
+
+<main class="main" id="dashboard">
+<header class="topbar">
+  <div class="topbar-title">Administration dashboard<small>Anonymous student feedback management</small></div>
+  <div class="top-actions"><span class="secure">● Authenticated admin view</span><div class="avatar">AD</div></div>
+</header>
+
+<div class="content">
+<div class="welcome">
+  <div><h1>Campus Voice overview</h1><p>Review incoming concerns, moderate submissions and publish official responses.</p></div>
+  <button class="btn btn-light" id="refreshMessages">↻ Refresh messages</button>
+</div>
+
+<section class="stats">
+  <article class="stat"><div class="stat-head">Total submissions <span class="stat-icon">✉</span></div><strong id="totalCount">—</strong><small>Text messages and voice notes</small></article>
+  <article class="stat"><div class="stat-head">Pending review <span class="stat-icon">◷</span></div><strong id="pendingCount">—</strong><small>Awaiting review</small></article>
+  <article class="stat"><div class="stat-head">Approved <span class="stat-icon">✓</span></div><strong id="approvedCount">—</strong><small>Reviewed submissions</small></article>
+  <article class="stat"><div class="stat-head">Public responses <span class="stat-icon">◉</span></div><strong id="publicCount">—</strong><small>Published official replies</small></article>
+</section>
+
+<section class="panel" id="inbox">
+  <div class="panel-head">
+    <div><h2>Submission inbox</h2><p>Open a submission to read its details and review status.</p></div>
+    <div class="tabs" id="statusTabs">
+      <button class="tab active" data-status="All">All messages</button>
+      <button class="tab" data-status="Pending">Pending</button>
+      <button class="tab" data-status="Approved">Approved</button>
+      <button class="tab" data-status="Rejected">Rejected</button>
+    </div>
+  </div>
+  <div class="filters">
+    <input type="search" id="searchInput" placeholder="Search reference, message or category…" aria-label="Search messages">
+    <select id="categoryFilter"><option value="All">All categories</option></select>
+    <select id="typeFilter"><option value="All">All types</option><option value="Text">Text</option><option value="Voice note">Voice note</option></select>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Submission</th><th>Type</th><th>Category</th><th>Received</th><th>Status</th><th>Actions</th></tr></thead>
+      <tbody id="messageRows"></tbody>
+    </table>
+  </div>
+  <div class="empty" id="emptyState" hidden><strong id="emptyTitle">No submissions found</strong><span id="emptyText">New messages will appear here when received by the server.</span></div>
+  <div class="footnote">Private submissions and voice recordings are visible only through authorized admin endpoints. Do not publish identifying or sensitive information.</div>
+</section>
+
+<div class="lower-grid">
+<section class="panel" id="publish">
+  <div class="panel-head"><div><h2>Publish an official response</h2><p>Share an update on the student homepage.</p></div></div>
+  <form class="publish-form" id="responseForm">
+    <div class="field"><label for="responseTitle">Response title *</label><input id="responseTitle" maxlength="100" required placeholder="e.g. Update on library opening hours"></div>
+    <div class="field"><label for="responseCategory">Topic *</label>
+      <select id="responseCategory" required>
+        <option value="">Select topic</option>
+        <option>Teaching and learning</option><option>Examinations and assessment</option>
+        <option>Library and learning resources</option><option>Hostels and accommodation</option>
+        <option>Food and catering</option><option>Fees and student services</option>
+        <option>Facilities, sanitation and safety</option><option>Student welfare</option>
+        <option>Suggestion or innovation</option><option>General announcement</option><option>Other</option>
+      </select>
+    </div>
+    <div class="field"><label for="responseText">Official feedback *</label><textarea id="responseText" maxlength="2500" required placeholder="Write an update for students…"></textarea><small>Do not include a student's identity or private complaint details.</small></div>
+    <label style="display:flex;gap:9px;align-items:flex-start;font-weight:600;color:var(--brown);font-size:12px;margin-bottom:15px"><input type="checkbox" id="publishNow" checked style="margin-top:3px">Publish this response on the student homepage</label>
+    <button class="btn btn-primary" type="submit" id="publishButton">Publish official response ↗</button>
+  </form>
+</section>
+<section class="panel">
+  <div class="panel-head"><div><h2>Student homepage feed</h2><p>Public replies returned by the server.</p></div><span class="badge published">PUBLIC FEED</span></div>
+  <div class="publish-list" id="publicFeed"><div class="empty"><strong>Loading public responses…</strong></div></div>
+</section>
+</div>
+<div class="notice"><strong>Server connection:</strong> This dashboard retrieves submissions and public responses from Flask. Your Flask app must implement the publishing and moderation endpoints used by this page. If an endpoint is missing, an error will be shown rather than pretending the change was saved.</div>
+</div>
+</main>
+</div>
+
+<div class="modal-backdrop" id="reviewModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+  <div class="modal"><div class="modal-head"><h2 id="modalTitle">Review submission</h2><button class="xbtn" id="closeModal" type="button" aria-label="Close">×</button></div><div class="modal-body" id="modalBody"></div></div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const API = {
+    submissions: '/api/admin/submissions?status=all',
+    submission: ref => '/api/admin/submissions/' + encodeURIComponent(ref),
+    responses: '/api/responses',
+    publish: '/api/admin/responses',
+    status: ref => '/api/admin/submissions/' + encodeURIComponent(ref) + '/status'
+  };
+
+  let messages = [];
+  let responses = [];
+  let activeStatus = 'All';
+  let selected = null;
+  let toastTimer = null;
+
+  function escapeHTML(value) {
+    return String(value ?? '').replace(/[&<>"']/g, c => ({
+      '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+    })[c]);
+  }
+
+  function toast(message) {
+    $('toast').textContent = message;
+    $('toast').classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => $('toast').classList.remove('show'), 4000);
+  }
+
+  async function api(url, options = {}) {
+    const response = await fetch(url, {
+      credentials: 'same-origin',
+      ...options,
+      headers: {
+        ...(options.body ? {'Content-Type':'application/json'} : {}),
+        ...(options.headers || {})
+      }
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (response.status === 401 || response.status === 403) {
+      throw new Error('Your admin session may have expired. Please sign in again.');
+    }
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || data.message || `Request failed (${response.status}).`);
+    }
+    return data;
+  }
+
+  function normalise(m, index) {
+    const ref = m.reference || m.ref || m.id || `submission-${index + 1}`;
+    const rawType = String(m.type || m.message_type || m.messageType || 'Text').toLowerCase();
+    return {
+      ...m,
+      id: String(ref),
+      reference: String(ref),
+      type: rawType.includes('voice') || rawType.includes('audio') ? 'Voice note' : 'Text',
+      category: String(m.category || 'Other'),
+      body: String(m.body || m.message || m.text || ''),
+      date: m.created_at || m.date || m.timestamp || '',
+      status: normalStatus(m.status)
+    };
+  }
+
+  function normalStatus(value) {
+    const status = String(value || 'Pending').toLowerCase();
+    if (status.includes('approv')) return 'Approved';
+    if (status.includes('reject')) return 'Rejected';
+    return 'Pending';
+  }
+
+  function dateLabel(value) {
+    if (!value) return 'Date unavailable';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? escapeHTML(value) :
+      date.toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
+  }
+
+  function badge(status) {
+    const cls = status === 'Approved' ? 'approved' : status === 'Rejected' ? 'rejected' : 'pending';
+    return `<span class="badge ${cls}">${escapeHTML(status)}</span>`;
+  }
+
+  function populateCategories() {
+    const select = $('categoryFilter');
+    const categories = [
+      'Teaching and learning','Examinations and assessment',
+      'Library and learning resources','Hostels and accommodation',
+      'Food and catering','Fees and student services',
+      'Facilities, sanitation and safety','Student welfare',
+      'Suggestion or innovation','Other'
+    ];
+    categories.forEach(value => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = value;
+      select.appendChild(option);
+    });
+  }
+
+  async function loadMessages() {
+    const data = await api(API.submissions);
+    const list = Array.isArray(data.submissions) ? data.submissions :
+                 Array.isArray(data.messages) ? data.messages :
+                 Array.isArray(data.items) ? data.items : [];
+    messages = list.map(normalise);
+    renderRows();
+  }
+
+  async function loadResponses() {
+    const data = await api(API.responses);
+    responses = Array.isArray(data.responses) ? data.responses : [];
+    renderFeed();
+  }
+
+  function renderStats() {
+    $('totalCount').textContent = messages.length;
+    $('pendingCount').textContent = messages.filter(m => m.status === 'Pending').length;
+    $('approvedCount').textContent = messages.filter(m => m.status === 'Approved').length;
+    $('publicCount').textContent = responses.filter(r => r.published === true).length;
+  }
+
+  function renderRows() {
+    const query = $('searchInput').value.trim().toLowerCase();
+    const category = $('categoryFilter').value;
+    const type = $('typeFilter').value;
+
+    const filtered = messages.filter(m =>
+      (activeStatus === 'All' || m.status === activeStatus) &&
+      (category === 'All' || m.category === category) &&
+      (type === 'All' || m.type === type) &&
+      (!query || `${m.reference} ${m.body} ${m.category}`.toLowerCase().includes(query))
+    );
+
+    $('messageRows').innerHTML = filtered.map(m => `
+      <tr>
+        <td><div class="subject">${escapeHTML(m.reference)}</div>
+          <div class="subtext">${escapeHTML(m.body.slice(0,85))}${m.body.length > 85 ? '…' : ''}</div></td>
+        <td><span class="badge type">${m.type === 'Voice note' ? '🎙 ' : '✍ '}${escapeHTML(m.type)}</span></td>
+        <td>${escapeHTML(m.category)}</td>
+        <td><span class="subtext">${dateLabel(m.date)}</span></td>
+        <td>${badge(m.status)}</td>
+        <td><div class="actions-cell">
+          <button class="btn btn-light btn-small" data-review="${escapeHTML(m.reference)}">Review</button>
+          ${m.status === 'Pending' ? `<button class="btn btn-success btn-small" data-quick-approve="${escapeHTML(m.reference)}">Approve</button>` : ''}
+        </div></td>
+      </tr>`).join('');
+
+    $('emptyState').hidden = filtered.length > 0;
+    $('emptyTitle').textContent = filtered.length ? '' : 'No submissions found';
+    $('emptyText').textContent = filtered.length ? '' :
+      'New messages will appear here when received by the server.';
+    $('messageRows').parentElement.style.display = filtered.length ? 'table' : 'none';
+    renderStats();
+  }
+
+  function renderFeed() {
+    const published = responses.filter(r => r.published === true);
+    $('publicFeed').innerHTML = published.slice().reverse().map(r => `
+      <article class="published-item">
+        <strong>${escapeHTML(r.title || 'Official administration response')}</strong>
+        <p>${escapeHTML(r.body || r.response || '')}</p>
+        <div class="item-meta"><span>${escapeHTML(r.category || 'General announcement')}</span>
+        <span>${dateLabel(r.date || r.created_at)}</span></div>
+      </article>`).join('') ||
+      '<div class="empty"><strong>No public responses yet</strong>Published replies will appear here.</div>';
+    renderStats();
+  }
+
+  async function openReview(reference) {
+    try {
+      const data = await api(API.submission(reference));
+      const m = normalise(data.submission || data.message || data, 0);
+      selected = m;
+
+      let audioMarkup = '';
+      const audioValue = m.audio || m.audio_url || m.audioUrl || null;
+
+      if (audioValue && typeof audioValue === 'string' && audioValue.startsWith('data:audio/')) {
+        audioMarkup = `<audio controls src="${escapeHTML(audioValue)}"></audio>`;
+      } else if (m.type === 'Voice note') {
+        audioMarkup = '<p class="subtext">This submission is a voice note. The server should provide a protected audio URL or audio data in its authorized submission response.</p>';
+      }
+
+      $('modalTitle').textContent = 'Review ' + m.reference;
+      $('modalBody').innerHTML = `
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">${badge(m.status)}<span class="badge type">${escapeHTML(m.type)}</span></div>
+        <p><strong>Reference:</strong> ${escapeHTML(m.reference)}<br>
+        <strong>Category:</strong> ${escapeHTML(m.category)}<br>
+        <strong>Received:</strong> ${dateLabel(m.date)}</p>
+        <div class="message-body">${escapeHTML(m.body || 'Voice note submission')}</div>
+        ${audioMarkup}
+        <div class="field"><label for="reviewNote">Internal review note</label>
+        <textarea id="reviewNote" maxlength="2000" placeholder="Internal note for administrators only…">${escapeHTML(m.review_note || m.reviewNote || '')}</textarea></div>
+        <div class="field"><label for="linkedResponse">Official response (optional)</label>
+        <textarea id="linkedResponse" maxlength="2500" placeholder="Write a privacy-safe response…">${escapeHTML(m.public_response || m.publicResponse || '')}</textarea>
+        <small>Publishing a response may require the separate public response form below.</small></div>
+        <div class="modal-actions">
+          <button class="btn btn-danger" id="rejectBtn">Reject</button>
+          <button class="btn btn-light" id="saveNoteBtn">Save note</button>
+          <button class="btn btn-success" id="approveBtn">Approve</button>
+        </div>`;
+
+      $('reviewModal').classList.add('show');
+      $('rejectBtn').onclick = () => updateStatus(m.reference, 'Rejected');
+      $('approveBtn').onclick = () => updateStatus(m.reference, 'Approved');
+      $('saveNoteBtn').onclick = () => updateStatus(m.reference, m.status, true);
+    } catch (error) {
+      toast(error.message);
+    }
+  }
+
+  async function updateStatus(reference, status, noteOnly = false) {
+    const note = $('reviewNote')?.value || '';
+    const publicResponse = $('linkedResponse')?.value || '';
+
+    try {
+      await api(API.status(reference), {
+        method: 'POST',
+        body: JSON.stringify({
+          status: noteOnly ? (selected?.status || status) : status,
+          review_note: note,
+          public_response: publicResponse
+        })
+      });
+
+      $('reviewModal').classList.remove('show');
+      selected = null;
+      await Promise.all([loadMessages(), loadResponses()]);
+      toast(noteOnly ? 'Review note saved.' : `Submission marked ${status.toLowerCase()}.`);
+    } catch (error) {
+      toast(error.message);
+    }
+  }
+
+  $('messageRows').addEventListener('click', event => {
+    const review = event.target.closest('[data-review]');
+    const approve = event.target.closest('[data-quick-approve]');
+    if (review) openReview(review.dataset.review);
+    if (approve) openReview(approve.dataset.quickApprove);
+  });
+
+  $('statusTabs').addEventListener('click', event => {
+    const button = event.target.closest('[data-status]');
+    if (!button) return;
+    activeStatus = button.dataset.status;
+    document.querySelectorAll('.tab').forEach(tab =>
+      tab.classList.toggle('active', tab === button)
+    );
+    renderRows();
+  });
+
+  document.querySelectorAll('[data-quick]').forEach(button => {
+    button.addEventListener('click', () => {
+      activeStatus = button.dataset.quick;
+      document.querySelectorAll('.tab').forEach(tab =>
+        tab.classList.toggle('active', tab.dataset.status === activeStatus)
+      );
+      renderRows();
+      $('inbox').scrollIntoView({behavior:'smooth'});
+    });
+  });
+
+  ['searchInput','categoryFilter','typeFilter'].forEach(id => {
+    $(id).addEventListener(id === 'searchInput' ? 'input' : 'change', renderRows);
+  });
+
+  $('closeModal').addEventListener('click', () => $('reviewModal').classList.remove('show'));
+  $('reviewModal').addEventListener('click', e => {
+    if (e.target === $('reviewModal')) $('reviewModal').classList.remove('show');
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') $('reviewModal').classList.remove('show');
+  });
+
+  $('refreshMessages').addEventListener('click', async () => {
+    try {
+      await Promise.all([loadMessages(), loadResponses()]);
+      toast('Dashboard refreshed.');
+    } catch (error) {
+      toast(error.message);
+    }
+  });
+
+  $('responseForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    const button = $('publishButton');
+    button.disabled = true;
+    button.textContent = 'Publishing…';
+
+    try {
+      const payload = {
+        title: $('responseTitle').value.trim(),
+        category: $('responseCategory').value,
+        body: $('responseText').value.trim(),
+        published: $('publishNow').checked
+      };
+
+      await api(API.publish, {method:'POST', body:JSON.stringify(payload)});
+      event.target.reset();
+      $('publishNow').checked = true;
+      await loadResponses();
+      toast('Official response saved to the server.');
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Publish official response ↗';
+    }
+  });
+
+  $('exportBtn').addEventListener('click', async () => {
+    try {
+      await Promise.all([loadMessages(), loadResponses()]);
+      const blob = new Blob([JSON.stringify({messages, responses}, null, 2)], {
+        type:'application/json'
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'campus-voice-export.json';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      toast('Export failed: ' + error.message);
+    }
+  });
+
+  let refreshing = false;
+  async function refreshAll(silent = false) {
+    if (refreshing) return;
+    refreshing = true;
+    try {
+      await Promise.all([loadMessages(), loadResponses()]);
+    } catch (error) {
+      if (!silent) toast(error.message);
+      $('emptyState').hidden = false;
+      $('emptyTitle').textContent = 'Could not load submissions';
+      $('emptyText').textContent = error.message;
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  populateCategories();
+  refreshAll();
+  setInterval(() => refreshAll(true), 15000);
+})();
+</script>
+</body>
+</html>

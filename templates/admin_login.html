@@ -1,0 +1,762 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#2b8ef1">
+  <title>Admin Login | Campus Voice</title>
+
+  <style>
+    :root {
+      --blue: #2b8ef1;
+      --brown: #8b5e3c;
+      --white: #ffffff;
+      --danger: #8b5e3c;
+      --success: #2b8ef1;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, "Segoe UI", Arial, sans-serif;
+      color: var(--brown);
+      background: var(--white);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 22px clamp(20px, 5vw, 72px);
+      background: var(--white);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      color: var(--brown);
+    }
+
+    .brand-mark {
+      width: 46px;
+      height: 46px;
+      border-radius: 15px;
+      display: grid;
+      place-items: center;
+      color: var(--white);
+      font-size: 22px;
+      font-weight: 800;
+      background: var(--blue);
+    }
+
+    .brand-name {
+      font-weight: 800;
+      font-size: 19px;
+      letter-spacing: -.4px;
+    }
+
+    .brand-name span {
+      display: block;
+      margin-top: 3px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 1.5px;
+      color: var(--brown);
+      text-transform: uppercase;
+    }
+
+    .back-link {
+      color: var(--brown);
+      text-decoration: none;
+      font-weight: 650;
+      font-size: 13px;
+    }
+
+    .back-link:hover {
+      color: var(--blue);
+    }
+
+    main {
+      width: 100%;
+      flex: 1;
+      display: grid;
+      place-items: center;
+      padding: 22px 18px 48px;
+    }
+
+    .layout {
+      width: min(100%, 1000px);
+      display: grid;
+      grid-template-columns: 1fr 430px;
+      background: var(--white);
+      border: 2px solid var(--blue);
+      border-radius: 26px;
+      overflow: hidden;
+      box-shadow: 0 20px 55px rgba(43, 142, 241, .15);
+    }
+
+    .welcome {
+      position: relative;
+      overflow: hidden;
+      padding: clamp(32px, 5vw, 58px);
+      color: var(--white);
+      background: var(--brown);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 560px;
+    }
+
+    .welcome::before,
+    .welcome::after {
+      content: "";
+      position: absolute;
+      border: 2px solid var(--blue);
+      border-radius: 50%;
+      pointer-events: none;
+    }
+
+    .welcome::before {
+      width: 360px;
+      height: 360px;
+      right: -160px;
+      top: -100px;
+    }
+
+    .welcome::after {
+      width: 280px;
+      height: 280px;
+      right: -95px;
+      top: -60px;
+    }
+
+    .welcome-content,
+    .welcome-footer {
+      position: relative;
+      z-index: 1;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border: 1px solid var(--blue);
+      background: var(--brown);
+      border-radius: 100px;
+      color: var(--white);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 1.3px;
+      text-transform: uppercase;
+    }
+
+    .eyebrow-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--blue);
+    }
+
+    h1 {
+      margin: 27px 0 17px;
+      max-width: 390px;
+      font-size: clamp(32px, 4vw, 45px);
+      line-height: 1.08;
+      letter-spacing: -1.5px;
+      color: var(--white);
+    }
+
+    .welcome p {
+      max-width: 360px;
+      color: var(--white);
+      line-height: 1.75;
+      font-size: 14px;
+      margin: 0;
+    }
+
+    .feature-list {
+      display: grid;
+      gap: 17px;
+      margin-top: 36px;
+    }
+
+    .feature {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--white);
+      font-size: 13px;
+    }
+
+    .feature-icon {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 11px;
+      background: var(--blue);
+      color: var(--white);
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+
+    .welcome-footer {
+      color: var(--white);
+      font-size: 11px;
+      margin-top: 42px;
+    }
+
+    .login-panel {
+      padding: clamp(30px, 4vw, 48px);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      background: var(--white);
+    }
+
+    .login-icon {
+      width: 54px;
+      height: 54px;
+      border-radius: 17px;
+      display: grid;
+      place-items: center;
+      background: var(--blue);
+      color: var(--white);
+      font-size: 25px;
+      margin-bottom: 24px;
+    }
+
+    .login-panel h2 {
+      font-size: 27px;
+      letter-spacing: -.7px;
+      margin: 0 0 9px;
+      color: var(--brown);
+    }
+
+    .subtext {
+      color: var(--brown);
+      font-size: 13px;
+      line-height: 1.6;
+      margin: 0 0 28px;
+    }
+
+    .field {
+      margin-bottom: 18px;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 750;
+      margin-bottom: 8px;
+      color: var(--brown);
+    }
+
+    .input-wrap {
+      position: relative;
+    }
+
+    input:not([type="checkbox"]) {
+      width: 100%;
+      border: 1px solid var(--brown);
+      border-radius: 12px;
+      padding: 14px 15px;
+      font: inherit;
+      font-size: 13px;
+      color: var(--brown);
+      background: var(--white);
+      outline: none;
+      transition: border .2s, box-shadow .2s;
+    }
+
+    input:focus {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px var(--blue);
+      background: var(--white);
+    }
+
+    input::placeholder {
+      color: var(--brown);
+      opacity: .8;
+    }
+
+    .password-input {
+      padding-right: 72px !important;
+    }
+
+    .toggle-password {
+      position: absolute;
+      top: 50%;
+      right: 12px;
+      transform: translateY(-50%);
+      border: 0;
+      background: var(--white);
+      color: var(--blue);
+      font-weight: 750;
+      font-size: 11px;
+      cursor: pointer;
+      padding: 6px;
+    }
+
+    .toggle-password:hover {
+      color: var(--brown);
+    }
+
+    .form-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin: 2px 0 23px;
+    }
+
+    .remember {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--brown);
+      font-size: 12px;
+      cursor: pointer;
+      margin: 0;
+    }
+
+    .remember input {
+      width: 15px;
+      height: 15px;
+      margin: 0;
+      accent-color: var(--blue);
+    }
+
+    .secure-label {
+      color: var(--brown);
+      font-size: 11px;
+      display: flex;
+      gap: 5px;
+      align-items: center;
+      white-space: nowrap;
+    }
+
+    .login-btn {
+      width: 100%;
+      border: 0;
+      border-radius: 12px;
+      padding: 15px;
+      background: var(--blue);
+      color: var(--white);
+      font-size: 13px;
+      font-weight: 800;
+      cursor: pointer;
+      box-shadow: 0 10px 22px rgba(43, 142, 241, .20);
+      transition: transform .18s, box-shadow .18s;
+    }
+
+    .login-btn:hover {
+      background: var(--brown);
+      transform: translateY(-1px);
+    }
+
+    .login-btn:active {
+      transform: translateY(0);
+    }
+
+    .login-btn:disabled {
+      opacity: .7;
+      cursor: wait;
+    }
+
+    .message {
+      padding: 11px 12px;
+      border-radius: 10px;
+      margin: 0 0 16px;
+      font-size: 12px;
+      line-height: 1.5;
+      border: 1px solid var(--blue);
+      color: var(--brown);
+      background: var(--white);
+    }
+
+    .message.error {
+      border-color: var(--brown);
+      color: var(--brown);
+      background: var(--white);
+    }
+
+    .message.success {
+      border-color: var(--blue);
+      color: var(--blue);
+      background: var(--white);
+    }
+
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--brown);
+      font-size: 10px;
+      margin: 24px 0 18px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .divider::before,
+    .divider::after {
+      content: "";
+      height: 1px;
+      flex: 1;
+      background: var(--blue);
+    }
+
+    .help {
+      text-align: center;
+      color: var(--brown);
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    .help strong {
+      color: var(--blue);
+    }
+
+    .security-note {
+      display: flex;
+      gap: 10px;
+      margin-top: 22px;
+      padding: 13px;
+      border-radius: 12px;
+      background: var(--brown);
+      color: var(--white);
+      font-size: 10px;
+      line-height: 1.55;
+    }
+
+    .security-note span {
+      color: var(--blue);
+      font-size: 15px;
+    }
+
+    .page-footer {
+      text-align: center;
+      padding: 0 16px 20px;
+      color: var(--brown);
+      font-size: 11px;
+    }
+
+    @media (max-width: 780px) {
+      .layout {
+        max-width: 470px;
+        grid-template-columns: 1fr;
+      }
+
+      .welcome {
+        min-height: auto;
+        padding: 27px 30px;
+      }
+
+      .welcome h1 {
+        font-size: 31px;
+        margin-top: 20px;
+      }
+
+      .welcome p {
+        font-size: 13px;
+      }
+
+      .feature-list {
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-top: 22px;
+      }
+
+      .feature {
+        font-size: 11px;
+        align-items: flex-start;
+      }
+
+      .feature-icon {
+        width: 30px;
+        height: 30px;
+      }
+
+      .welcome-footer {
+        margin-top: 24px;
+      }
+
+      .login-panel {
+        padding: 32px 28px;
+      }
+
+      .topbar {
+        padding: 17px 20px;
+      }
+    }
+
+    @media (max-width: 420px) {
+      .brand-name {
+        font-size: 16px;
+      }
+
+      .brand-mark {
+        width: 40px;
+        height: 40px;
+      }
+
+      .back-link {
+        font-size: 11px;
+      }
+
+      .feature-list {
+        grid-template-columns: 1fr;
+      }
+
+      .welcome {
+        padding: 25px;
+      }
+
+      .login-panel {
+        padding: 28px 23px;
+      }
+
+      .form-row {
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <header class="topbar">
+    <a class="brand"
+       href="{{ url_for('home') }}"
+       aria-label="Campus Voice homepage">
+      <div class="brand-mark">C</div>
+      <div class="brand-name">
+        Campus Voice
+        <span>Meru National Polytechnic</span>
+      </div>
+    </a>
+
+    <a class="back-link" href="{{ url_for('home') }}">
+      ← Student homepage
+    </a>
+  </header>
+
+  <main>
+    <section class="layout" aria-label="Administrator sign in">
+
+      <aside class="welcome">
+        <div class="welcome-content">
+          <div class="eyebrow">
+            <span class="eyebrow-dot"></span>
+            Administration portal
+          </div>
+
+          <h1>Listen. Understand. Make a difference.</h1>
+
+          <p>
+            Access the Campus Voice administration dashboard to review
+            student concerns and publish official responses responsibly.
+          </p>
+
+          <div class="feature-list">
+            <div class="feature">
+              <span class="feature-icon">▤</span>
+              <span>Review submitted concerns</span>
+            </div>
+
+            <div class="feature">
+              <span class="feature-icon">✓</span>
+              <span>Manage approval status</span>
+            </div>
+
+            <div class="feature">
+              <span class="feature-icon">↗</span>
+              <span>Publish official responses</span>
+            </div>
+
+            <div class="feature">
+              <span class="feature-icon">◈</span>
+              <span>Protect student privacy</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="welcome-footer">
+          A respectful campus starts with listening.
+        </div>
+      </aside>
+
+      <section class="login-panel">
+        <div class="login-icon">♙</div>
+
+        <h2>Admin sign in</h2>
+
+        <p class="subtext">
+          Enter your administrator credentials to continue to the dashboard.
+        </p>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, msg in messages %}
+              <div
+                class="message {{ 'error' if category in ['error', 'danger'] else category }}"
+                role="alert"
+                aria-live="polite">
+                {{ msg }}
+              </div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        {% if error %}
+          <div class="message error" role="alert">
+            {{ error }}
+          </div>
+        {% endif %}
+
+        <form
+          id="loginForm"
+          method="POST"
+          action="{{ url_for('admin_login') }}">
+
+          {% if csrf_token is defined %}
+            <input
+              type="hidden"
+              name="csrf_token"
+              value="{{ csrf_token() }}">
+          {% endif %}
+
+          <div class="field">
+            <label for="username">Username</label>
+            <input
+              id="username"
+              name="username"
+              type="text"
+              placeholder="Enter admin username"
+              autocomplete="username"
+              value="{{ request.form.get('username', '') }}"
+              required
+              autofocus>
+          </div>
+
+          <div class="field">
+            <label for="password">Password</label>
+
+            <div class="input-wrap">
+              <input
+                class="password-input"
+                id="password"
+                name="password"
+                type="password"
+                placeholder="Enter your password"
+                autocomplete="current-password"
+                required>
+
+              <button
+                class="toggle-password"
+                type="button"
+                id="togglePassword"
+                aria-controls="password"
+                aria-pressed="false">
+                Show
+              </button>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <label class="remember">
+              <input id="remember" type="checkbox">
+              Remember username
+            </label>
+
+            <span class="secure-label">♧ Admin access</span>
+          </div>
+
+          <button class="login-btn" id="loginButton" type="submit">
+            Sign in to dashboard&nbsp; →
+          </button>
+        </form>
+
+        <div class="divider">Secure workspace</div>
+
+        <div class="help">
+          Need access assistance?<br>
+          <strong>Contact the system administrator.</strong>
+        </div>
+
+        <div class="security-note">
+          <span>ⓘ</span>
+          <div>
+            <strong>Secure sign in:</strong>
+            Your credentials are submitted to the server for validation.
+            Only authorized administrators should access the dashboard.
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <footer class="page-footer">
+    © <span id="year"></span> Campus Voice · Meru National Polytechnic
+  </footer>
+
+  <script>
+    const form = document.getElementById("loginForm");
+    const usernameInput = document.getElementById("username");
+    const passwordInput = document.getElementById("password");
+    const togglePassword = document.getElementById("togglePassword");
+    const rememberCheckbox = document.getElementById("remember");
+    const loginButton = document.getElementById("loginButton");
+
+    document.getElementById("year").textContent =
+      new Date().getFullYear();
+
+    try {
+      const savedUsername =
+        localStorage.getItem("campusVoiceRememberedUsername");
+
+      if (savedUsername) {
+        usernameInput.value = savedUsername;
+        rememberCheckbox.checked = true;
+      }
+    } catch (error) {}
+
+    togglePassword.addEventListener("click", function () {
+      const showing = passwordInput.type === "text";
+
+      passwordInput.type = showing ? "password" : "text";
+      togglePassword.textContent = showing ? "Show" : "Hide";
+      togglePassword.setAttribute("aria-pressed", String(!showing));
+    });
+
+    form.addEventListener("submit", function () {
+      try {
+        if (rememberCheckbox.checked) {
+          localStorage.setItem(
+            "campusVoiceRememberedUsername",
+            usernameInput.value.trim()
+          );
+        } else {
+          localStorage.removeItem("campusVoiceRememberedUsername");
+        }
+      } catch (error) {}
+
+      if (form.checkValidity()) {
+        loginButton.disabled = true;
+        loginButton.textContent = "Signing in...";
+      }
+    });
+  </script>
+</body>
+</html>
